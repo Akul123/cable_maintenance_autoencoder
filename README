@@ -1,0 +1,132 @@
+ethtool --phy-statistics eth0
+ethtool eth0
+ethtool -S eth0
+From ethtool -S counters, the best early indicators are:
+	in_fcs_error (CRC/FCS)
+	in_rx_error
+	in_fragments, in_jabber, in_oversize (usually zero; nonzero is suspicious)
+	in_discards (can be congestion too, but watch trends)
+
+1️ Cable / PHY Features
+
+These reflect electrical margin, noise, connector degradation.
+Retrieve from:
+ethtool --phy-statistics XP1
+(and link state from XP1)
+Features
+Primary early-warning signals
+	- phy_receive_errors_rate Δphy_receive_errors_copper / 60 Source: ethtool --phy-statistics XP1
+	- phy_idle_errors_rate Δphy_idle_errors / 60 Source: same
+These are closest to real physical degradation.
+Link stability
+	- link_flap (1 if link changed since last minute)
+	- Source: ethtool XP1 or /sys/class/net/XP1/operstate
+	- flaps_1h (rolling count)
+	- time_since_last_link_down
+Connector problems show up here before permanent failure.
+
+Temperature context
+temp_c
+temp_delta_10m
+Source: /sys/class/hwmon/...
+
+2 Port MAC / Switch (Physical Port Symptoms)
+These show corrupted frames arriving from that specific cable.
+Retrieve from:
+ethtool -S XP1
+(not masterif — use the actual DSA port netdev)
+
+Features
+Integrity (most important)
+	- fcs_rate Δin_fcs_error / 60 fcs_per_million_pkts
+	- 1e6 * Δin_fcs_error / max(Δrx_packets,1)
+	- rx_error_rate Δin_rx_error / 60
+	- bad_octets_rate Δin_bad_octets / 60
+
+Malformed frames
+- fragment_rate = Δin_fragments / 60
+- jabber_rate = Δin_jabber / 60
+- oversize_rate = Δin_oversize / 60
+- undersize_rate = Δin_undersize / 60
+These are rare. If they rise → something is electrically wrong.
+
+Drops at ingress
+- port_discards_rate Δin_discards / 60
+
+3️ CPU / Master MAC (Host-Side Context)
+
+These tell you if the system is overloaded — not the cable.
+Retrieve from:
+ethtool -S masterif
+
+Features
+
+Host congestion
+- host_rx_drop_rate ΔIEEE_rx_drop / 60
+- host_tx_drop_rate ΔIEEE_tx_drop / 60
+- tx_dropped_rate Δtx_dropped / 60
+
+If these rise but XP1 integrity is clean → not cable.
+
+Host CRC (secondary check)
+- host_rx_crc_rate Δrx_crc_errors / 60
+Less specific than per-port in_fcs_error.
+
+4 Traffic Context (prevents false positives)
+Retrieve from:
+Preferably XP1 for port-specific load
+(or masterif if easier)
+
+Load
+- rx_bps = Δrx_bytes * 8 / 60
+- tx_bps = Δtx_bytes * 8 / 60
+- pps = (Δrx_packets + Δtx_packets) / 60
+- utilization = (rx_bps + tx_bps) / link_speed_bps
+Errors under heavy utilization are more meaningful than errors at idle.
+
+
+Minimal Clean Feature Set (if you want it tight)
+Cable/PHY (XP1)
+- phy_receive_errors_rate
+- phy_idle_errors_rate
+- link_flap
+- temp_c
+
+Port Integrity (XP1)
+- fcs_per_million_pkts
+- rx_error_rate
+- port_discards_rate
+
+Host Context (masterif)
+- host_rx_drop_rate
+- utilization
+
+
+These are your “instantaneous” signals.
+That’s 9 features. That’s already strong.
+
+========================================
+Level 1 — Raw (per minute)
+From XP1 / masterif:
+	fcs_per_million_pkts
+	phy_receive_errors_rate
+	port_discards_rate
+	link_flap
+	utilization
+	temp_c
+
+These are your “instantaneous” signals.
+
+Level 2 — Windowed (over last 10 minutes)
+These are computed from the raw ones:
+	mean_fcs_per_million
+	max_fcs_per_million
+	mean_phy_rxerr
+	max_phy_rxerr
+	mean_discards
+	max_discards
+	flaps_10m (sum of link_flap)
+	mean_utilization
+	mean_temp
+	temp_slope_10m = temp_now − temp_10_minutes_ago
+========================================
