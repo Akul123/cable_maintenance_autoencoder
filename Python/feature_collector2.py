@@ -51,6 +51,39 @@ FEATURE_FIELDS = [
     "temp_slope_10m",
 ]
 
+# Canonical metric -> possible ethtool key names across drivers
+KEY_ALIASES = {
+    "rx_bytes": ["rx_bytes", "rx_octets", "q0_rx_bytes"],
+    "tx_bytes": ["tx_bytes", "tx_octets", "q0_tx_bytes"],
+    "rx_packets": ["rx_packets", "rx_frames", "q0_rx_packets"],
+    "tx_packets": ["tx_packets", "tx_frames", "q0_tx_packets"],
+
+    "rx_errors": ["rx_errors"],
+    "tx_errors": ["tx_errors"],
+    "tx_dropped": ["tx_dropped", "q0_tx_dropped"],
+    "rx_dropped": ["rx_dropped", "q0_rx_dropped"],
+
+    "rx_crc_errors": ["rx_crc_errors", "rx_frame_check_sequence_errors"],
+    "rx_frame_errors": ["rx_frame_errors", "rx_alignment_errors"],
+    "rx_align_errors": ["rx_align_errors", "rx_alignment_errors"],
+    "rx_length_errors": ["rx_length_errors", "rx_length_field_frame_errors"],
+    "rx_missed_errors": ["rx_missed_errors", "rx_overruns", "rx_resource_errors"],
+    "rx_no_buffer_count": ["rx_no_buffer_count", "rx_resource_errors"],
+
+    "tx_carrier_errors": ["tx_carrier_errors", "tx_carrier_sense_errors"],
+    "tx_timeout_count": ["tx_timeout_count"],
+    "rx_dma_failed": ["rx_dma_failed"],
+    "tx_dma_failed": ["tx_dma_failed"],
+    "alloc_rx_buff_failed": ["alloc_rx_buff_failed"],
+
+    "corr_ecc_errors": ["corr_ecc_errors"],
+    "uncorr_ecc_errors": ["uncorr_ecc_errors"],
+
+    # PHY
+    "phy_receive_errors": ["phy_receive_errors", "phy_receive_errors_copper"],
+    "phy_idle_errors": ["phy_idle_errors"],
+}
+
 def run_cmd(cmd):
     try:
         return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
@@ -133,10 +166,10 @@ def ethtool_speed_mbps(iface, default=0):
         pass
     return default
 
-def pick(d, *keys, default=None):
-    for k in keys:
-        if k in d:
-            return d[k]
+def pick(stats: dict, canonical: str, default=None):
+    for k in KEY_ALIASES.get(canonical, [canonical]):
+        if k in stats:
+            return stats[k]
     return default
 
 def safe_rate(curr, prev, dt_sec):
@@ -214,7 +247,7 @@ def compute_cable_features(
     has_phy = 1 if phy_stats else 0
     feats["has_phy_stats"] = has_phy
 
-    phy_rx = pick(phy_stats, "phy_receive_errors_copper", "phy_receive_errors")
+    phy_rx = pick(phy_stats, "phy_receive_errors")
     phy_idle = pick(phy_stats, "phy_idle_errors")
     prev_phy_rx = pick(state.prev_phy, "phy_receive_errors_copper", "phy_receive_errors")
     prev_phy_idle = pick(state.prev_phy, "phy_idle_errors")
@@ -233,8 +266,8 @@ def compute_cable_features(
     feats["time_since_last_link_down"] = None if state.last_link_down_ts is None else (ts - state.last_link_down_ts)
 
     # ---------- Port MAC integrity ----------
-    in_fcs = pick(port_stats, "in_fcs_error", "rx_crc_errors")
-    in_rx_err = pick(port_stats, "in_rx_error", "rx_errors")
+    in_fcs = pick(port_stats, "rx_crc_errors")
+    in_rx_err = pick(port_stats, "rx_errors")
     in_bad_octets = pick(port_stats, "in_bad_octets")
     in_frag = pick(port_stats, "in_fragments")
     in_jabber = pick(port_stats, "in_jabber")
@@ -289,6 +322,7 @@ def compute_cable_features(
     # ---------- Traffic context ----------
     rx_bytes = pick(port_stats, "rx_bytes")
     tx_bytes = pick(port_stats, "tx_bytes")
+    rx_packets = pick(port_stats, "rx_packets")
     tx_packets = pick(port_stats, "tx_packets")
     p_rx_bytes = pick(state.prev_port, "rx_bytes")
     p_tx_bytes = pick(state.prev_port, "tx_bytes")
