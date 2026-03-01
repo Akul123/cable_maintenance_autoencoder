@@ -172,11 +172,33 @@ def pick(stats: dict, canonical: str, default=None):
             return stats[k]
     return default
 
-def safe_rate(curr, prev, dt_sec):
-    if dt_sec <= 0 or curr is None or prev is None:
+def as_num(v):
+    if v is None or v == "":
         return None
-    d = curr - prev
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+def nonneg_delta(curr, prev):
+    c = as_num(curr)
+    p = as_num(prev)
+    if c is None or p is None:
+        return None
+    d = c - p
     if d < 0:
+        return None
+    return d
+
+def safe_rate(curr, prev, dt_sec):
+    if dt_sec is None or dt_sec <= 0:
+        return None
+    c = as_num(curr)
+    p = as_num(prev)
+    if c is None or p is None:
+        return None
+    d = c - p
+    if d < 0:   # counter reset/rollover
         return None
     return d / dt_sec
 
@@ -288,9 +310,14 @@ def compute_cable_features(
 
     feats["fcs_rate"] = safe_rate(in_fcs, p_in_fcs, dt_sec)
     if dt_sec > 0 and None not in (rx_packets, p_rx_packets, in_fcs, p_in_fcs):
-        rx_pkts_delta = max(rx_packets - p_rx_packets, 0)
-        fcs_delta = max(in_fcs - p_in_fcs, 0)
-        feats["fcs_per_million_pkts"] = 1_000_000.0 * fcs_delta / max(rx_pkts_delta, 1)
+        rx_pkts_delta = nonneg_delta(rx_packets, p_rx_packets)
+        fcs_delta = nonneg_delta(in_fcs, p_in_fcs)
+
+        if dt_sec > 0 and rx_pkts_delta is not None and fcs_delta is not None:
+            feats["fcs_per_million_pkts"] = 1_000_000.0 * fcs_delta / max(rx_pkts_delta, 1.0)
+        else:
+            feats["fcs_per_million_pkts"] = None
+
     else:
         feats["fcs_per_million_pkts"] = None
 
