@@ -1,0 +1,8 @@
+{
+    "model_name": "cable_autoencoder_tflite",
+    "model_path": "../../Python/output/cable_autoencoder_export/models/cable_autoencoder_quant_fp16.tflite",
+    "vocabs_path": "",
+    "enabled_acceleration": true,
+    "xnnpack_num_threads": 2,
+    "fallback_num_threads": 2
+}

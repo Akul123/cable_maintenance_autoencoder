@@ -130,3 +130,24 @@ These are computed from the raw ones:
 	mean_temp
 	temp_slope_10m = temp_now − temp_10_minutes_ago
 ========================================
+
+
+TESTING:
+
+Mild bending usually won’t cause measurable errors on a good short cable.
+Most links only show errors under load, because idle traffic doesn’t stress signal integrity.
+Unplug/replug mainly gives carrier drops and link_flap, not subtle degradation.
+
+Heavy traffic generate with:
+iperf3 -s            # on peer
+iperf3 -c <peer_ip> -t 300 -P 4
+
+For reproducible non-disconnect faults, use stronger conditions:
+
+Long/poor cable (old Cat5, damaged patch lead).
+- Extra connectors/couplers in series.
+- Strong bend right at RJ45 strain relief while iperf3 is running.
+- EMI exposure (near power brick/motor cable).
+- Force speed higher (e.g., 1G) and run heavy traffic.
+
+Idea is to make error counters move (traffic + physical disturbance).
