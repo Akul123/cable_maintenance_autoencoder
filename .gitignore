@@ -1,4 +1,3 @@
-Python/output/*
 Python/__pycache__/*
 
 C_C++/C/cable_autoencoder_xnnpack/*
