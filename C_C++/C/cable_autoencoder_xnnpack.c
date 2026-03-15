@@ -817,10 +817,10 @@ int main() {
                                     mse_per_feature,
                                     feature_names);
         history_push_record(&history_obj, &rec);
-        if (save_stats_json(STATS_PATH, &stats_obj) != 0) {
+        if (save_stats_json(stats_filename, &stats_obj) != 0) {
             fprintf(stderr, "failed to save stats json\n");
         }
-        if (save_history_json(HISTORY_PATH, &history_obj) != 0) {
+        if (save_history_json(history_filename, &history_obj) != 0) {
             fprintf(stderr, "failed to save history json\n");
         }
 
