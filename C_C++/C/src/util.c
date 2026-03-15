@@ -551,7 +551,7 @@ int read_config(const char* cfg_path, struct model_config *value)
         json_object_put(root);
         return 1;
     }
-    if (!json_object_object_get_ex(root, "fallback_num_threads", &threshold)) {
+    if (!json_object_object_get_ex(root, "threshold", &threshold)) {
         fprintf(stderr, "Missing key: threshold\n");
         json_object_put(root);
         return 1;
