@@ -16,8 +16,8 @@
 #define SPAN_10MIN      600.0f  // 10 min in seconds
 #define SPAN_1H         3600.0f // 1 hour in seconds
 
-#define STATS_PATH      "./stats.json"
-#define HISTORY_PATH    "./history.json"
+#define STATS_PATH      "/var/lib/cable_autoencoder_xnnpack/stats.json"
+#define HISTORY_PATH    "/var/lib/cable_autoencoder_xnnpack/history.json"
 
 #if DEBUG
 #define LOGF(...) printf(__VA_ARGS__)
