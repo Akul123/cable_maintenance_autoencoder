@@ -647,6 +647,7 @@ int main() {
     printf("-Enabled acceleration: %s\n", config.enabled_acceleration ? "true" : "false");
     printf("-xnpack number of threads: %d\n", config.xnnpack_num_threads);
     printf("-fallback number of threads: %d\n", config.fallback_num_threads);
+    printf("-threshold: %d\n", config.threshold);
     printf("==================================================================\n");
 
     model = TfLiteModelCreateFromFile(config.model_path);
