@@ -3,6 +3,9 @@
 #define _GNU_SOURCE
 #include <time.h>
 #include <sys/sysinfo.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "tflite/c/c_api.h"
 #include "tflite/c/c_api_experimental.h"
@@ -617,6 +620,9 @@ int main() {
     int in_count = 0;
     int out_count = 0;
 
+    char stats_filename[PATH_MAX];
+    char history_filename[PATH_MAX];
+
     cable_feature_state feature_state;
     struct interface_stats phy_stats;
     cable_features features;
@@ -630,6 +636,8 @@ int main() {
     memset(&history_metrics, 0, sizeof(history_metrics));
     memset(&anomaly_metrics, 0, sizeof(anomaly_metrics));
     memset(&config, 0, sizeof(config));
+    memset(&stats_filename, 0, sizeof(stats_filename));
+    memset(&history_filename, 0, sizeof(history_filename));
 
     if(read_config(CONFIG_PATH, &config)) {
         printf("Failed to load config from %s, trying from %s\n", CONFIG_PATH, CONFIG_PATH_ETC);
@@ -717,6 +725,12 @@ int main() {
         const TfLiteTensor* ti = TfLiteInterpreterGetInputTensor(interpreter, i);
         printf("input[%d] name=%s type=%d bytes=%zu\n", i, TfLiteTensorName(ti), TfLiteTensorType(ti), TfLiteTensorByteSize(ti));
     }
+
+    mkdir(STATS_PATH, 0755);
+    mkdir(HISTORY_PATH, 0755);
+
+    sprintf(stats_filename, "%s/%s", STATS_PATH, STATS_FILENAME);
+    sprintf(history_filename, "%s/%s", HISTORY_PATH, HISTORY_FILENAME);
 
     while (1) {
         raw_sample sample;
