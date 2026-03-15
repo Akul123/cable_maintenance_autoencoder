@@ -122,10 +122,15 @@ void build_sample_history_record(sample_history_record *rec,
 
 int save_stats_json(const char *path, const stats *s) {
     struct json_object *root;
+    int rc;
 
     if (!path || !s) return -1;
 
     root = json_object_new_object();
+    if (!root) {
+        return -1;
+    }
+
     json_object_object_add(root, "total_samples", json_object_new_int64((int64_t)s->total_samples));
     json_object_object_add(root, "total_normal_count", json_object_new_int64((int64_t)s->total_normal_count));
     json_object_object_add(root, "total_suspicious_count", json_object_new_int64((int64_t)s->total_suspicious_count));
@@ -135,20 +140,33 @@ int save_stats_json(const char *path, const stats *s) {
     json_object_object_add(root, "last_mse", json_object_new_double((double)s->last_mse));
     json_object_object_add(root, "last_anomaly_level", json_object_new_string(states_string[s->last_anomaly_level]));
 
-    json_object_to_file_ext(path, root, JSON_C_TO_STRING_PRETTY);
+    fprintf(stderr, "save_stats_json: writing to %s\n", path);
+
+    rc = json_object_to_file_ext(path, root, JSON_C_TO_STRING_PRETTY);
+    if (rc != 0) {
+        perror("json_object_to_file_ext");
+        fprintf(stderr, "save_stats_json: failed to write %s\n", path);
+    }
+
     json_object_put(root);
-    return 0;
+    return rc;
 }
 
 int save_history_json(const char *path, const history_stats *h) {
     struct json_object *root;
     struct json_object *records;
     size_t i;
+    int rc;
 
     if (!path || !h) return -1;
 
     root = json_object_new_object();
     records = json_object_new_array();
+    if (!root || !records) {
+        if (root) json_object_put(root);
+        if (records) json_object_put(records);
+        return -1;
+    }
 
     for (i = 0; i < h->count; ++i) {
         size_t idx = (h->start + i) % WINDOW_CAP;
@@ -156,6 +174,14 @@ int save_history_json(const char *path, const history_stats *h) {
         struct json_object *item = json_object_new_object();
         struct json_object *top3 = json_object_new_array();
         size_t j;
+
+        if (!item || !top3) {
+            if (item) json_object_put(item);
+            if (top3) json_object_put(top3);
+            json_object_put(records);
+            json_object_put(root);
+            return -1;
+        }
 
         json_object_object_add(item, "ts_sec", json_object_new_double(rec->ts_sec));
         json_object_object_add(item, "mse", json_object_new_double(rec->mse));
@@ -169,6 +195,14 @@ int save_history_json(const char *path, const history_stats *h) {
 
         for (j = 0; j < 3; ++j) {
             struct json_object *top = json_object_new_object();
+            if (!top) {
+                json_object_put(item);
+                json_object_put(top3);
+                json_object_put(records);
+                json_object_put(root);
+                return -1;
+            }
+
             json_object_object_add(top, "name", json_object_new_string(rec->top3[j].name));
             json_object_object_add(top, "error", json_object_new_double(rec->top3[j].error));
             json_object_array_add(top3, top);
@@ -181,7 +215,14 @@ int save_history_json(const char *path, const history_stats *h) {
     json_object_object_add(root, "count", json_object_new_int((int)h->count));
     json_object_object_add(root, "records", records);
 
-    json_object_to_file_ext(path, root, JSON_C_TO_STRING_PRETTY);
+    fprintf(stderr, "save_history_json: writing to %s\n", path);
+
+    rc = json_object_to_file_ext(path, root, JSON_C_TO_STRING_PRETTY);
+    if (rc != 0) {
+        perror("json_object_to_file_ext");
+        fprintf(stderr, "save_history_json: failed to write %s\n", path);
+    }
+
     json_object_put(root);
-    return 0;
+    return rc;
 }
