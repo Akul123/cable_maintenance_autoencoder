@@ -184,6 +184,7 @@ class CableAutoencoder:
         xhat = self.model(X_val_raw, training=False)
         err = self.reconstruction_error(X_val_raw, xhat)
         th = self._quantile_axis0(tf.expand_dims(err, 1), self.cfg.threshold_quantile)[0]
+        self.cfg.threshold = float(th.numpy())
         self.threshold.assign(th)
 
     def train(self):

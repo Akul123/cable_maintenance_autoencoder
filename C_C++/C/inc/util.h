@@ -106,6 +106,7 @@ struct model_config {
     char model_path[256];
     char vocab_path[256];
     char model_name[64];
+    float threshold;
     bool enabled_acceleration;
     int xnnpack_num_threads;
     int fallback_num_threads;

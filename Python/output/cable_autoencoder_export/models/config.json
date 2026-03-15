@@ -1,5 +1,5 @@
 {
-  "train_csv": "/workdir/project/cable_autoencoder/Python/dataset/rpi5_eth0_5s_dataset.csv",
+  "train_csv": "/workdir/project/cable_autoencoder/Python/dataset/rpi5_eth0_60s_dataset.csv",
   "feature_cols": [
     "frame_err_ppm",
     "length_err_ppm",
@@ -46,5 +46,6 @@
   "epochs": 100,
   "early_stop_patience": 20,
   "threshold_quantile": 0.999,
+  "threshold": 0.05223405361175537,
   "export_dir": "output/cable_autoencoder_export"
 }

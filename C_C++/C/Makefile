@@ -13,7 +13,7 @@ TARGET = cable_autoencoder_xnnpack
 SRC_FILE = $(TARGET).c
 TARGET_BIN = $(TARGET)/$(TARGET)
 
-INC_PATH = -I./inc -I$(LITERT_PATH) -I$(LITERT_INC)
+INC_PATH = -I./* -I./inc -I$(LITERT_PATH) -I$(LITERT_INC)
 INC_SRC  = $(wildcard ./src/*.c)
 INC_HDR  = $(wildcard ./inc/*.h)
 SRC_HDR  = $(wildcard ./src/*.h)

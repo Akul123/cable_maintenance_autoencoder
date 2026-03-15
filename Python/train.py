@@ -72,6 +72,7 @@ class Config:
 
     # Threshold
     threshold_quantile: float = Config.threshold_quantile
+    threshold: float = 0
     # Export
     export_dir: str = Config.export_dir
 
@@ -96,7 +97,7 @@ if __name__ == "__main__":
         print(f"Threshold: {float(cae.threshold.numpy()):.6f}")
 
         output = {"threshold": float(cae.threshold.numpy())}
-        with tf.io.gfile.GFile(f"{cfg.export_dir}/models/output.json", "w") as f:
+        with tf.io.gfile.GFile(f"{cfg.export_dir}/models/model_output.json", "w") as f:
             json.dump(output, f, indent=2)
     else:
         cae.load()

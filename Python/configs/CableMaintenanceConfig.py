@@ -6,7 +6,7 @@
 
 # Training
 model_name="cable_autoencoder"
-train_csv: str = "/workdir/project/cable_autoencoder/Python/dataset/rpi5_eth0_5s_dataset.csv"
+train_csv: str = "/workdir/project/cable_autoencoder/Python/dataset/rpi5_eth0_60s_dataset.csv"
 val_ratio: float = 0.2
 seed: int = 42
 enc1: int = 256

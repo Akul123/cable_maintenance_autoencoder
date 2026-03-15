@@ -34,7 +34,7 @@ static uint32_t rd32(const unsigned char *p)
     memcpy(&v,p,4);
 
     return ntohl(v);
-}
+};
 
 static uint64_t rd64(const unsigned char *p)
 {
@@ -513,7 +513,7 @@ float sparse_cross_entropy(const float *prob, int idx, int n) {
 int read_config(const char* cfg_path, struct model_config *value)
 {
     struct json_object *model_obj, *vocabs_obj, *model_name, *xnnpack_num_threads,
-                       *fallback_num_threads, *enabled_acceleration;
+                       *fallback_num_threads, *enabled_acceleration, *threshold;
 
     struct json_object* root = json_object_from_file(cfg_path);
     if (!root) {
@@ -551,6 +551,11 @@ int read_config(const char* cfg_path, struct model_config *value)
         json_object_put(root);
         return 1;
     }
+    if (!json_object_object_get_ex(root, "fallback_num_threads", &threshold)) {
+        fprintf(stderr, "Missing key: threshold\n");
+        json_object_put(root);
+        return 1;
+    }
 
     strncpy(value->model_path, json_object_get_string(model_obj), sizeof(value->model_path)-1);
     strncpy(value->vocab_path, json_object_get_string(vocabs_obj), sizeof(value->vocab_path)-1);
@@ -558,6 +563,7 @@ int read_config(const char* cfg_path, struct model_config *value)
     value->enabled_acceleration = json_object_get_int(enabled_acceleration);
     value->xnnpack_num_threads = json_object_get_int(xnnpack_num_threads);
     value->fallback_num_threads = json_object_get_int(fallback_num_threads);
+    value->threshold = (float)json_object_get_double(threshold);
 
     json_object_put(root); // free JSON
 

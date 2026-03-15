@@ -3,133 +3,34 @@
 #define _GNU_SOURCE
 #include <time.h>
 #include <sys/sysinfo.h>
-#include <math.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
 
 #include "tflite/c/c_api.h"
 #include "tflite/c/c_api_experimental.h"
 #include "tflite/delegates/xnnpack/xnnpack_delegate.h"
 #include "inc/util.h"
+#include "json_util.h"
 #include "utlist.h"
+#include "./cable_autoencoder_xnnpack.h"
 
-#define NUM_INPUTS      1
-#define NUM_OUTPUTS     1
-#define NUM_FEATURES    14
-#define INTERVAL        60
-#define BITS_PER_BYTE   8.0f
-#define WINDOW_CAP      256
-
-#if DEBUG
-#define LOGF(...) printf(__VA_ARGS__)
-#else
-#define LOGF(...) do {} while (0)
-#endif
-
-#define CONFIG_PATH     "./config.json"
-#define CONFIG_PATH_ETC "/etc/cable_autoencoder/config.json"
-#define INTERFACE       "eth0"
-
-struct interface_stats {
-    int32_t peer_ifindex;
-
-    uint64_t rx_packets;
-    uint64_t tx_packets;
-    uint64_t rx_bytes;
-    uint64_t tx_bytes;
-
-    uint64_t rx_errors;
-    uint64_t tx_errors;
-    uint64_t rx_crc_errors;
-    uint64_t tx_dropped;
-    uint64_t rx_dropped;
-
-    uint64_t rx_frame_errors;
-    uint64_t rx_length_errors;
-    uint64_t rx_alignment_errors;
-    uint64_t rx_missed_errors;
-    uint64_t rx_no_buffer_count;
-
-    uint64_t in_bad_octets;
-    uint64_t in_fragments;
-    uint64_t in_jabber;
-    uint64_t in_oversize;
-    uint64_t in_undersize;
-    uint64_t in_discards;
-
-    uint64_t phy_receive_errors;
-    uint64_t phy_serdes_ber_errors;
-    uint64_t phy_false_carrier_sense_errors;
-    uint64_t phy_local_rcvr_nok;
-    uint64_t phy_remote_rcv_nok;
+const char *states_string[] = {"normal", "suspicious", "anomalous"};
+const char *const feature_names[14] = {
+    "frame_err_ppm",
+    "length_err_ppm",
+    "speed_change_count_10m",
+    "speed_is_downgraded",
+    "rx_err_ppm",
+    "phy_receive_errors_rate",
+    "phy_serdes_ber_errors_rate",
+    "fcs_per_million_pkts",
+    "rx_error_rate",
+    "host_rx_crc_rate",
+    "tx_dropped_rate",
+    "utilization",
+    "flaps_10m",
+    "temp_slope_10m"
 };
 
-typedef struct cable_features {
-    float frame_err_ppm;                // per million RX packets
-    float length_err_ppm;               // per million RX packets
-    float speed_change_count_10m;       // count of link speed changes in last 10 min
-    float speed_is_downgraded;          // 1 if current speed < previous speed, else 0
-    float rx_err_ppm;                   // per million RX packets
-
-    float phy_receive_errors_rate;      // phy stats delta / sec
-    float phy_serdes_ber_errors_rate;   // phy stats delta / sec
-    float fcs_per_million_pkts;         // CRC/FCS delta per million RX packets
-    float rx_error_rate;                // RX errors delta / sec
-    float host_rx_crc_rate;             // host RX CRC delta / sec
-    float tx_dropped_rate;              // host TX dropped delta / sec
-    float utilization;                  // (rx_bps + tx_bps) / link_bps
-    float flaps_10m;                    // carrier transition count in last 10 min
-    float temp_slope_10m;               // (temp_now - temp_10m_ago) / 600
-} cable_features;
-
-typedef struct raw_sample {
-    double ts_sec;
-
-    int carrier;
-    int speed_mbps;
-    float temp_c;
-
-    uint64_t rx_packets;
-    uint64_t tx_packets;
-    uint64_t rx_bytes;
-    uint64_t tx_bytes;
-
-    uint64_t rx_errors;
-    uint64_t rx_crc_errors;
-    uint64_t tx_dropped;
-
-    uint64_t rx_frame_errors;
-    uint64_t rx_length_errors;
-
-    uint64_t phy_receive_errors;
-    uint64_t phy_serdes_ber_errors;
-} raw_sample;
-
-typedef struct rolling_window {
-    double ts[WINDOW_CAP];
-    float val[WINDOW_CAP];
-    size_t start;
-    size_t count;
-} rolling_window;
-
-typedef struct cable_feature_state {
-    int initialized;
-    raw_sample prev;
-
-    rolling_window speed_change_10m;
-    rolling_window link_flap_10m;
-    rolling_window temp_10m;
-} cable_feature_state;
-
-struct tuple {
-    char key[64];
-    union {
-        float value;
-    };
-};
-
+/* GLOBALS */
 struct model_config config;
 cable_features current_features;
 cable_features prev_features;
@@ -224,11 +125,10 @@ static int parse_ethtool_kv_u64(uint64_t *stat, char *ethtool_output, const char
     return -1;
 }
 
-static int compute_cable_features(
-    cable_feature_state *state,
-    const raw_sample *curr,
-    cable_features *out
-) {
+static int compute_cable_features( cable_feature_state *state,
+                                   const raw_sample *curr,
+                                   cable_features *out,
+                                   cable_history_metrics* out_history_metrics) {
     double dt_sec;
     float rx_pkts_delta;
     float frame_delta;
@@ -243,6 +143,7 @@ static int compute_cable_features(
     float link_flap = 0.0f;
 
     memset(out, 0, sizeof(*out));
+    memset(out_history_metrics, 0, sizeof(*out_history_metrics));
 
     if (!state->initialized) {
         state->prev = *curr;
@@ -266,9 +167,12 @@ static int compute_cable_features(
         link_flap = 1.0f;
     }
 
-    rolling_push(&state->speed_change_10m, curr->ts_sec, speed_changed, 600.0);
-    rolling_push(&state->link_flap_10m, curr->ts_sec, link_flap, 600.0);
-    rolling_push(&state->temp_10m, curr->ts_sec, curr->temp_c, 600.0);
+    rolling_push(&state->speed_change_10m, curr->ts_sec, speed_changed, SPAN_10MIN);
+    rolling_push(&state->link_flap_10m, curr->ts_sec, link_flap, SPAN_10MIN);
+    rolling_push(&state->temp_10m, curr->ts_sec, curr->temp_c, SPAN_10MIN);
+    rolling_push(&state->speed_change_1h, curr->ts_sec, speed_changed, SPAN_1H);
+    rolling_push(&state->link_flap_1h, curr->ts_sec, link_flap, SPAN_1H);
+    rolling_push(&state->temp_1h, curr->ts_sec, curr->temp_c, SPAN_1H);
 
     rx_pkts_delta = nonneg_delta_u64(curr->rx_packets, state->prev.rx_packets);
     frame_delta = nonneg_delta_u64(curr->rx_frame_errors, state->prev.rx_frame_errors);
@@ -276,59 +180,45 @@ static int compute_cable_features(
     rx_err_delta = nonneg_delta_u64(curr->rx_errors, state->prev.rx_errors);
     fcs_delta = nonneg_delta_u64(curr->rx_crc_errors, state->prev.rx_crc_errors);
 
-    out->frame_err_ppm =
-        (!isnan(frame_delta) && !isnan(rx_pkts_delta))
-            ? (1000000.0f * frame_delta / fmaxf(rx_pkts_delta, 1.0f))
-            : NAN;
+    out->frame_err_ppm = (!isnan(frame_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * frame_delta / fmaxf(rx_pkts_delta, 1.0f))
+                                                                        : NAN;
 
-    out->length_err_ppm =
-        (!isnan(len_delta) && !isnan(rx_pkts_delta))
-            ? (1000000.0f * len_delta / fmaxf(rx_pkts_delta, 1.0f))
-            : NAN;
+    out->length_err_ppm = (!isnan(len_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * len_delta / fmaxf(rx_pkts_delta, 1.0f))
+                                                                       : NAN;
 
     out->speed_change_count_10m = rolling_sum(&state->speed_change_10m);
     out->speed_is_downgraded = speed_downgraded;
 
-    out->rx_err_ppm =
-        (!isnan(rx_err_delta) && !isnan(rx_pkts_delta))
-            ? (1000000.0f * rx_err_delta / fmaxf(rx_pkts_delta, 1.0f))
-            : NAN;
+    out->rx_err_ppm = (!isnan(rx_err_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * rx_err_delta / fmaxf(rx_pkts_delta, 1.0f))
+                                                                      : NAN;
 
-    out->phy_receive_errors_rate =
-        safe_rate_u64(curr->phy_receive_errors, state->prev.phy_receive_errors, dt_sec);
+    out->phy_receive_errors_rate = safe_rate_u64(curr->phy_receive_errors, state->prev.phy_receive_errors, dt_sec);
+    out->phy_serdes_ber_errors_rate = safe_rate_u64(curr->phy_serdes_ber_errors, state->prev.phy_serdes_ber_errors, dt_sec);
+    out->fcs_per_million_pkts = (!isnan(fcs_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * fcs_delta / fmaxf(rx_pkts_delta, 1.0f))
+                                                                             : NAN;
 
-    out->phy_serdes_ber_errors_rate =
-        safe_rate_u64(curr->phy_serdes_ber_errors, state->prev.phy_serdes_ber_errors, dt_sec);
-
-    out->fcs_per_million_pkts =
-        (!isnan(fcs_delta) && !isnan(rx_pkts_delta))
-            ? (1000000.0f * fcs_delta / fmaxf(rx_pkts_delta, 1.0f))
-            : NAN;
-
-    out->rx_error_rate =
-        safe_rate_u64(curr->rx_errors, state->prev.rx_errors, dt_sec);
-
-    out->host_rx_crc_rate =
-        safe_rate_u64(curr->rx_crc_errors, state->prev.rx_crc_errors, dt_sec);
-
-    out->tx_dropped_rate =
-        safe_rate_u64(curr->tx_dropped, state->prev.tx_dropped, dt_sec);
+    out->rx_error_rate = safe_rate_u64(curr->rx_errors, state->prev.rx_errors, dt_sec);
+    out->host_rx_crc_rate = safe_rate_u64(curr->rx_crc_errors, state->prev.rx_crc_errors, dt_sec);
+    out->tx_dropped_rate = safe_rate_u64(curr->tx_dropped, state->prev.tx_dropped, dt_sec);
 
     rx_bps = safe_rate_u64(curr->rx_bytes, state->prev.rx_bytes, dt_sec) * BITS_PER_BYTE;
     tx_bps = safe_rate_u64(curr->tx_bytes, state->prev.tx_bytes, dt_sec) * BITS_PER_BYTE;
 
-    out->utilization =
-        (curr->speed_mbps > 0 && !isnan(rx_bps) && !isnan(tx_bps))
-            ? ((rx_bps + tx_bps) / ((float)curr->speed_mbps * 1000000.0f))
-            : NAN;
+    out->utilization = (curr->speed_mbps > 0 && !isnan(rx_bps) && !isnan(tx_bps)) ? ((rx_bps + tx_bps) / ((float)curr->speed_mbps * 1000000.0f))
+                                                                                  : NAN;
 
     out->flaps_10m = rolling_sum(&state->link_flap_10m);
 
     temp_first = rolling_first(&state->temp_10m);
-    out->temp_slope_10m =
-        (!isnan(temp_first) && !isnan(curr->temp_c))
-            ? ((curr->temp_c - temp_first) / 600.0f)
-            : NAN;
+    out->temp_slope_10m = (!isnan(temp_first) && !isnan(curr->temp_c)) ? ((curr->temp_c - temp_first) / 600.0f)
+                                                                       : NAN;
+
+    /* cable history metrics */
+    out_history_metrics->speed_change_count_1h = rolling_sum(&state->speed_change_1h);
+    out_history_metrics->flaps_1h = rolling_sum(&state->link_flap_1h);
+    float first_temp_1h = rolling_first(&state->temp_1h);
+    out_history_metrics->temp_slope_1h = (!isnan(curr->temp_c) && !isnan(first_temp_1h)) ? (curr->temp_c - first_temp_1h) / 3600.0f
+                                                                                         : NAN;
 
     state->prev = *curr;
     return 0;
@@ -383,13 +273,13 @@ static inline int64_t timespec_diff_ns( struct timespec end, struct timespec sta
     return (int64_t)(end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec);
 }
 
-static int invoke_model(
-    TfLiteInterpreter *interpreter,
-    cable_feature_state *feature_state,
-    const raw_sample *sample,
-    cable_features *features,
-    float *reconstruction_error
-) {
+static int invoke_model( TfLiteInterpreter *interpreter,
+                         cable_feature_state *feature_state,
+                         const raw_sample *sample,
+                         cable_features *features,
+                         cable_history_metrics *history_metrics,
+                         float *reconstruction_error,
+                         float *reconstruction_error_per_feature) {
     float model_input[NUM_FEATURES];
     float model_output[NUM_FEATURES];
     TfLiteTensor *in;
@@ -399,7 +289,8 @@ static int invoke_model(
     struct timespec start, end;
     float mse = 0.0f;
 
-    feat_rc = compute_cable_features(feature_state, sample, features);
+    /* calculate cable features from samples, update feature state */
+    feat_rc = compute_cable_features(feature_state, sample, features, history_metrics);
     if (feat_rc != 0) {
         return feat_rc;
     }
@@ -434,6 +325,7 @@ static int invoke_model(
 
     for (i = 0; i < NUM_FEATURES; ++i) {
         float d = model_input[i] - model_output[i];
+        reconstruction_error_per_feature[i] = fabsf(d);
         mse += d * d;
     }
     mse /= (float)NUM_FEATURES;
@@ -682,6 +574,38 @@ static int read_host_temp(void)
     return 0;
 }
 
+static void update_anomaly_metrics(float mse, float threshold, double timestamp, cable_feature_state *feature_stats,
+                                   cable_anomaly_history_metrics *anomaly_metrics) {
+    int anomaly_level = NORMAL;
+
+    if (mse <= 0.9 * threshold) {
+        anomaly_level = NORMAL;
+    } else if(mse > 0.9 * threshold &&
+              mse <= threshold) {
+        anomaly_level = SUSPICIOUS;
+    } else {
+        anomaly_level = ANOMALOUS;
+    }
+
+    /* push ot ANOMALOUS window*/
+    if(anomaly_level == ANOMALOUS) {
+        rolling_push(&feature_stats->anomalous_1h, timestamp, (int)1.0f, SPAN_1H);
+    } else {
+        rolling_push(&feature_stats->anomalous_1h, timestamp, (int)0.0f, SPAN_1H);
+    }
+
+    /* push ot SUSPICOUS window*/
+    if(anomaly_level == SUSPICIOUS) {
+        rolling_push(&feature_stats->suspicious_1h, timestamp, (int)1.0f, SPAN_1H);
+    } else {
+        rolling_push(&feature_stats->suspicious_1h, timestamp, (int)0.0f, SPAN_1H);
+    }
+
+    anomaly_metrics->anomalous_count_1h = rolling_sum(&feature_stats->anomalous_1h);
+    anomaly_metrics->suspicious_count_1h = rolling_sum(&feature_stats->suspicious_1h);
+
+}
+
 int main() {
     int rc = 1;
     TfLiteModel* model = NULL;
@@ -696,15 +620,15 @@ int main() {
     cable_feature_state feature_state;
     struct interface_stats phy_stats;
     cable_features features;
+    cable_history_metrics history_metrics;
+    cable_anomaly_history_metrics anomaly_metrics;
     float mse = 0.0f;
 
     memset(&feature_state, 0, sizeof(feature_state));
     memset(&phy_stats, 0, sizeof(phy_stats));
     memset(&features, 0, sizeof(features));
-
-    //float model_input[NUM_FEATURES];
-    //float model_output[NUM_FEATURES];
-
+    memset(&history_metrics, 0, sizeof(history_metrics));
+    memset(&anomaly_metrics, 0, sizeof(anomaly_metrics));
     memset(&config, 0, sizeof(config));
 
     if(read_config(CONFIG_PATH, &config)) {
@@ -723,7 +647,7 @@ int main() {
     printf("-Enabled acceleration: %s\n", config.enabled_acceleration ? "true" : "false");
     printf("-xnpack number of threads: %d\n", config.xnnpack_num_threads);
     printf("-fallback number of threads: %d\n", config.fallback_num_threads);
-    printf("=================================================================\n");
+    printf("==================================================================\n");
 
     model = TfLiteModelCreateFromFile(config.model_path);
     if (!model) {
@@ -794,49 +718,56 @@ int main() {
     }
 
     while (1) {
-        raw_sample s;
+        raw_sample sample;
         int res;
+        int anomaly_level;
         struct interface_stats port_stats;
+        stats stats_obj;
+        history_stats history_obj;
+        sample_history_record rec;
+        float mse_per_feature[NUM_FEATURES];
 
-        memset(&s, 0, sizeof(s));
+        memset(&sample, 0, sizeof(sample));
+        memset(&stats_obj, 0, sizeof(stats_obj));
+        memset(&history_obj, 0, sizeof(history_obj));
+        memset(&rec, 0, sizeof(rec));
         memset(&phy_stats, 0, sizeof(phy_stats));
         memset(&port_stats, 0, sizeof(port_stats));
+        memset(&mse_per_feature, 0, sizeof(mse_per_feature));
 
-        s.ts_sec = (double)time(NULL);
-        s.carrier = read_int_sys(INTERFACE, "carrier");
-        s.speed_mbps = get_speed_mbps(INTERFACE);
-        s.temp_c = (float)read_host_temp();
+        sample.ts_sec = (double)time(NULL);
+        sample.carrier = read_int_sys(INTERFACE, "carrier");
+        sample.speed_mbps = get_speed_mbps(INTERFACE);
+        sample.temp_c = (float)read_host_temp();
 
-        s.rx_packets = read_u64_stat(INTERFACE, "rx_packets");
-        s.tx_packets = read_u64_stat(INTERFACE, "tx_packets");
-        s.rx_bytes   = read_u64_stat(INTERFACE, "rx_bytes");
-        s.tx_bytes   = read_u64_stat(INTERFACE, "tx_bytes");
-        s.rx_errors  = read_u64_stat(INTERFACE, "rx_errors");
-        s.rx_crc_errors = read_u64_stat(INTERFACE, "rx_crc_errors");
-        s.tx_dropped = read_u64_stat(INTERFACE, "tx_dropped");
+        sample.rx_packets = read_u64_stat(INTERFACE, "rx_packets");
+        sample.tx_packets = read_u64_stat(INTERFACE, "tx_packets");
+        sample.rx_bytes = read_u64_stat(INTERFACE, "rx_bytes");
+        sample.tx_bytes = read_u64_stat(INTERFACE, "tx_bytes");
+        sample.rx_errors = read_u64_stat(INTERFACE, "rx_errors");
+        sample.rx_crc_errors = read_u64_stat(INTERFACE, "rx_crc_errors");
+        sample.tx_dropped = read_u64_stat(INTERFACE, "tx_dropped");
 
         if (ethtool_port_stats(INTERFACE, &port_stats) != 0) {
             memset(&port_stats, 0, sizeof(port_stats));
         }
-        if (read_u64_stat_or_default(INTERFACE, "rx_frame_errors", &s.rx_frame_errors) != 0) {
-            s.rx_frame_errors = port_stats.rx_frame_errors;
+        if (read_u64_stat_or_default(INTERFACE, "rx_frame_errors", &sample.rx_frame_errors) != 0) {
+            sample.rx_frame_errors = port_stats.rx_frame_errors;
         }
 
-        if (read_u64_stat_or_default(INTERFACE, "rx_length_errors", &s.rx_length_errors) != 0) {
-            s.rx_length_errors = port_stats.rx_length_errors;
+        if (read_u64_stat_or_default(INTERFACE, "rx_length_errors", &sample.rx_length_errors) != 0) {
+            sample.rx_length_errors = port_stats.rx_length_errors;
         }
-        //s.rx_frame_errors = read_u64_stat(INTERFACE, "rx_frame_errors");
-        //s.rx_length_errors = read_u64_stat(INTERFACE, "rx_length_errors");
 
         if (ethtool_phy_stats(INTERFACE, &phy_stats) != 0) {
             fprintf(stderr, "failed to read PHY stats\n");
             sleep(INTERVAL);
             continue;
         }
-        s.phy_receive_errors = phy_stats.phy_receive_errors;
-        s.phy_serdes_ber_errors = phy_stats.phy_serdes_ber_errors;
+        sample.phy_receive_errors = phy_stats.phy_receive_errors;
+        sample.phy_serdes_ber_errors = phy_stats.phy_serdes_ber_errors;
 
-        res = invoke_model(interpreter, &feature_state, &s, &features, &mse);
+        res = invoke_model(interpreter, &feature_state, &sample, &features, &history_metrics, &mse, mse_per_feature);
         if (res == 1) {
             sleep(INTERVAL);
             continue;
@@ -848,6 +779,31 @@ int main() {
         }
 
         printf("reconstruction_error=%f\n", mse);
+
+        if (mse <= 0.9 * config.threshold) {
+            printf("result is %s [%f<%f] \n", states_string[NORMAL], mse, config.threshold);
+        } else if(mse > 0.9 * config.threshold &&
+                  mse<= config.threshold) {
+            printf("result is %s [%f < %f < %f]\n", states_string[SUSPICIOUS], 0.9*config.threshold, mse, config.threshold);
+        } else {
+            printf("result is %s [%f<%f]\n", states_string[ANOMALOUS], config.threshold, mse);
+        }
+
+        update_anomaly_metrics(mse, config.threshold, sample.ts_sec, &feature_state, &anomaly_metrics);
+        anomaly_level = classify_anomaly_level(mse, config.threshold);
+        update_stats(&stats_obj, mse, anomaly_level);
+        build_sample_history_record(&rec,
+                                    sample.ts_sec,
+                                    mse,
+                                    anomaly_level,
+                                    &features,
+                                    &history_metrics,
+                                    &anomaly_metrics,
+                                    mse_per_feature,
+                                    feature_names);
+        history_push_record(&history_obj, &rec);
+        save_stats_json(STATS_PATH, &stats_obj);
+        save_history_json(HISTORY_PATH, &history_obj);
 
         sleep(INTERVAL);
     }
