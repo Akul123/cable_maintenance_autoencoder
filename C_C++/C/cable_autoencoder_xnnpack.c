@@ -628,8 +628,10 @@ int main() {
     cable_features features;
     cable_history_metrics history_metrics;
     cable_anomaly_history_metrics anomaly_metrics;
+    history_stats history_obj;
     float mse = 0.0f;
 
+    memset(&history_obj, 0, sizeof(history_obj));
     memset(&feature_state, 0, sizeof(feature_state));
     memset(&phy_stats, 0, sizeof(phy_stats));
     memset(&features, 0, sizeof(features));
@@ -738,13 +740,11 @@ int main() {
         int anomaly_level;
         struct interface_stats port_stats;
         stats stats_obj;
-        history_stats history_obj;
         sample_history_record rec;
         float mse_per_feature[NUM_FEATURES];
 
         memset(&sample, 0, sizeof(sample));
         memset(&stats_obj, 0, sizeof(stats_obj));
-        memset(&history_obj, 0, sizeof(history_obj));
         memset(&rec, 0, sizeof(rec));
         memset(&phy_stats, 0, sizeof(phy_stats));
         memset(&port_stats, 0, sizeof(port_stats));

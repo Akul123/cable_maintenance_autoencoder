@@ -45,7 +45,8 @@ void update_stats(stats *s, float mse, int anomaly_level) {
 void history_push_record(history_stats *h, const sample_history_record *rec) {
     size_t idx;
 
-    if (!h || !rec) return;
+    if (!h || !rec)
+        return;
 
     if (h->count == WINDOW_CAP) {
         h->start = (h->start + 1) % WINDOW_CAP;
@@ -163,8 +164,8 @@ int save_history_json(const char *path, const history_stats *h) {
     root = json_object_new_object();
     records = json_object_new_array();
     if (!root || !records) {
-        if (root) json_object_put(root);
-        if (records) json_object_put(records);
+        json_object_put(root);
+        json_object_put(records);
         return -1;
     }
 
@@ -192,6 +193,8 @@ int save_history_json(const char *path, const history_stats *h) {
         json_object_object_add(item, "speed_change_count_1h", json_object_new_double(rec->speed_change_count_1h));
         json_object_object_add(item, "flaps_1h", json_object_new_double(rec->flaps_1h));
         json_object_object_add(item, "temp_slope_1h", json_object_new_double(rec->temp_slope_1h));
+        json_object_object_add(item, "anomalous_count_1h", json_object_new_double(rec->anomalous_count_1h));
+        json_object_object_add(item, "suspicious_count_1h", json_object_new_double(rec->suspicious_count_1h));
 
         for (j = 0; j < 3; ++j) {
             struct json_object *top = json_object_new_object();

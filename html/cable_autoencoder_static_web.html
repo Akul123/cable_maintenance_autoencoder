@@ -1,0 +1,310 @@
+<!-- SERVE IT WITH: python3 -m http.server 8080 --directory /var/www/cable -->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cable History Viewer</title>
+  <script src="./chart.umd.js"></script>
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --panel: #fffaf2;
+      --ink: #1f2937;
+      --muted: #6b7280;
+      --line1: #c2410c;
+      --line2: #0f766e;
+      --accent: #111827;
+      --grid: rgba(31, 41, 55, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, #f9e7c4 0, transparent 35%),
+        linear-gradient(135deg, #f4f1ea, #efe6d7);
+      min-height: 100vh;
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 40px auto;
+      padding: 24px;
+    }
+
+    .panel {
+      background: rgba(255, 250, 242, 0.9);
+      backdrop-filter: blur(6px);
+      border: 1px solid rgba(31, 41, 55, 0.08);
+      border-radius: 18px;
+      padding: 24px;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.08);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 2rem;
+    }
+
+    .sub {
+      color: var(--muted);
+      margin-bottom: 18px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+
+    select, button {
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(31, 41, 55, 0.15);
+      background: white;
+      color: var(--ink);
+      font: inherit;
+    }
+
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+      margin: 18px 0 24px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 14px;
+      border: 1px solid rgba(31, 41, 55, 0.08);
+    }
+
+    .label {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .value {
+      font-size: 1.3rem;
+      margin-top: 6px;
+      font-weight: bold;
+    }
+
+    canvas {
+      width: 100%;
+      max-height: 480px;
+    }
+
+    .hint {
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    @media (max-width: 640px) {
+      .wrap { margin: 16px auto; padding: 12px; }
+      .panel { padding: 16px; }
+      h1 { font-size: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <h1>Cable History Viewer</h1>
+      <div class="sub">Loads `history.json` and plots anomaly history over time.</div>
+
+      <div class="controls">
+        <input type="file" id="fileInput" accept=".json" />
+        <select id="metricSelect">
+          <!-- <option value="mse">mse</option> -->
+          <option value="speed_change_count_10m">speed_change_count_10m</option>
+          <option value="flaps_10m">flaps_10m</option>
+          <option value="temp_slope_10m">temp_slope_10m</option>
+          <option value="speed_change_count_1h">speed_change_count_1h</option>
+          <option value="flaps_1h">flaps_1h</option>
+          <option value="temp_slope_1h">temp_slope_1h</option>
+          <option value="anomalous_count_1h">anomalous_count_1h</option>
+          <option value="suspicious_count_1h">suspicious_count_1h</option>
+        </select>
+        <button id="loadSample">Load Sample Path Hint</button>
+      </div>
+
+      <div class="meta">
+        <div class="card">
+          <div class="label">Record count</div>
+          <div class="value" id="recordCount">-</div>
+        </div>
+        <div class="card">
+          <div class="label">Latest anomaly level</div>
+          <div class="value" id="latestLevel">-</div>
+        </div>
+        <div class="card">
+          <div class="label">Latest summary</div>
+          <div class="value" id="latestTop">-</div>
+        </div>
+      </div>
+
+      <canvas id="historyChart"></canvas>
+      <div class="hint" id="hint">
+        Open a local `history.json` file exported by your C program.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const ctx = document.getElementById("historyChart");
+    const fileInput = document.getElementById("fileInput");
+    const metricSelect = document.getElementById("metricSelect");
+    const recordCount = document.getElementById("recordCount");
+    const latestLevel = document.getElementById("latestLevel");
+    const latestTop = document.getElementById("latestTop");
+    const hint = document.getElementById("hint");
+
+    let rawData = null;
+    let chart = null;
+
+    function levelToColor(level) {
+      if (level === "ANOMALOUS") return "#b91c1c";
+      if (level === "SUSPICIOUS") return "#d97706";
+      return "#15803d";
+    }
+
+    function buildChart(data, metricKey) {
+      const records = Array.isArray(data.records) ? data.records : [];
+      const labels = records.map(r => new Date((r.ts_sec || 0) * 1000).toLocaleString());
+      const mseData = records.map(r => r.mse ?? null);
+      const metricData = records.map(r => r[metricKey] ?? null);
+      const pointColors = records.map(r => levelToColor(r.anomaly_level));
+
+      if (chart) chart.destroy();
+
+      chart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels,
+          datasets: [
+            {
+              label: "mse",
+              data: mseData,
+              borderColor: "#c2410c",
+              backgroundColor: "rgba(194, 65, 12, 0.15)",
+              tension: 0.25,
+              yAxisID: "y",
+              pointBackgroundColor: pointColors,
+              pointRadius: 4
+            },
+            {
+              label: metricKey,
+              data: metricData,
+              borderColor: "#0f766e",
+              backgroundColor: "rgba(15, 118, 110, 0.15)",
+              tension: 0.25,
+              yAxisID: "y1",
+              pointRadius: 2
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          interaction: { mode: "index", intersect: false },
+          plugins: {
+            legend: { position: "top" },
+            tooltip: {
+              callbacks: {
+                afterBody(items) {
+                  const i = items[0].dataIndex;
+                  const rec = records[i];
+                  const top = rec.top3 && rec.top3[0]
+                    ? `${rec.top3[0].name} (${rec.top3[0].error})`
+                    : "n/a";
+                  return [
+                    `anomaly_level: ${rec.anomaly_level ?? "n/a"}`,
+                    `top feature: ${top}`
+                  ];
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              ticks: { maxRotation: 45, minRotation: 45 },
+              grid: { color: "rgba(31, 41, 55, 0.08)" }
+            },
+            y: {
+              type: "linear",
+              position: "left",
+              title: { display: true, text: "mse" },
+              grid: { color: "rgba(31, 41, 55, 0.12)" }
+            },
+            y1: {
+              type: "linear",
+              position: "right",
+              title: { display: true, text: metricKey },
+              grid: { drawOnChartArea: false }
+            }
+          }
+        }
+      });
+
+      recordCount.textContent = data.count ?? records.length ?? 0;
+
+      const latest = records[records.length - 1];
+      latestLevel.textContent = latest?.anomaly_level ?? "-";
+      latestTop.textContent = `${latest?.top3?.[0]?.name ?? "-"} | A:${latest?.anomalous_count_1h ?? 0} S:${latest?.suspicious_count_1h ?? 0}`;
+
+    }
+
+    async function loadHistoryFromServer() {
+        try {
+            const history_location = "./history.json"
+            const resp = await fetch(history_location);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            rawData = data;
+            buildChart(rawData, metricSelect.value);
+            hint.textContent = "History loaded from target.";
+        } catch (err) {
+            hint.textContent = `Failed to load history.json: ${err.message}`;
+        }
+    }
+
+    function loadJsonText(text) {
+      try {
+        const data = JSON.parse(text);
+        rawData = data;
+        buildChart(rawData, metricSelect.value);
+        hint.textContent = "History loaded successfully.";
+      } catch (err) {
+        hint.textContent = `Invalid JSON: ${err.message}`;
+      }
+    }
+
+    fileInput.addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      loadJsonText(await file.text());
+    });
+
+    metricSelect.addEventListener("change", () => {
+      if (rawData) buildChart(rawData, metricSelect.value);
+    });
+
+    document.getElementById("loadSample").addEventListener("click", () => {
+      hint.textContent =
+        "If running on target, your JSON is likely at /var/lib/cable_autoencoder_xnnpack/history.json";
+    });
+
+    loadHistoryFromServer()
+    setInterval(loadHistoryFromServer, 5000);
+
+  </script>
+</body>
+</html>

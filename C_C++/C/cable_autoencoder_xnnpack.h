@@ -18,7 +18,7 @@
 
 #define STATS_PATH          "/var/lib/cable_autoencoder_xnnpack"
 #define STATS_FILENAME      "stats.json"
-#define HISTORY_PATH        "/var/lib/cable_autoencoder_xnnpack/"
+#define HISTORY_PATH        "/var/lib/cable_autoencoder_xnnpack"
 #define HISTORY_FILENAME    "history.json"
 
 #if DEBUG
