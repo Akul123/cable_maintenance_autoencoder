@@ -267,7 +267,7 @@ void model_inputs_outputs(TfLiteInterpreter* interpreter)
         for (int d = 0; d < TfLiteTensorNumDims(t); ++d) {
             printf("%d%s", TfLiteTensorDim(t, d), d + 1 == TfLiteTensorNumDims(t) ? "" : ",");
         }
-        printf("]\n");
+        printf("]\n\n");
     }
 }
 
@@ -722,17 +722,21 @@ int main() {
     }
 
     // ---- Inspect inputs (order matters) ----
-    printf("Inputs: \n");
-    for (int i = 0; i < in_count; ++i) {
-        const TfLiteTensor* ti = TfLiteInterpreterGetInputTensor(interpreter, i);
-        printf("input[%d] name=%s type=%d bytes=%zu\n", i, TfLiteTensorName(ti), TfLiteTensorType(ti), TfLiteTensorByteSize(ti));
-    }
+    // printf("Inputs: \n");
+    // for (int i = 0; i < in_count; ++i) {
+    //     const TfLiteTensor* ti = TfLiteInterpreterGetInputTensor(interpreter, i);
+    //     printf("input[%d] name=%s type=%d bytes=%zu\n", i, TfLiteTensorName(ti), TfLiteTensorType(ti), TfLiteTensorByteSize(ti));
+    // }
 
     mkdir(STATS_PATH, 0755);
     mkdir(HISTORY_PATH, 0755);
 
     sprintf(stats_filename, "%s/%s", STATS_PATH, STATS_FILENAME);
     sprintf(history_filename, "%s/%s", HISTORY_PATH, HISTORY_FILENAME);
+
+    printf("stats.json: writing to %s\n", stats_filename);
+    printf("save_history.json: writing to %s\n", history_filename);
+    printf("--------------------------------------------------------------------\n");
 
     while (1) {
         raw_sample sample;
@@ -793,6 +797,11 @@ int main() {
             continue;
         }
 
+        if (isnan(mse)) {
+            printf("mse is %f, setting to 0 \n", mse);
+            mse = 0;
+        }
+
         printf("reconstruction_error=%f\n", mse);
 
         if (mse <= 0.9 * config.threshold) {
@@ -824,6 +833,7 @@ int main() {
             fprintf(stderr, "failed to save history json\n");
         }
 
+        printf("--------------------------------------------------------------------\n");
         sleep(INTERVAL);
     }
     rc = 0;

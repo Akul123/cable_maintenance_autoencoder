@@ -141,8 +141,6 @@ int save_stats_json(const char *path, const stats *s) {
     json_object_object_add(root, "last_mse", json_object_new_double((double)s->last_mse));
     json_object_object_add(root, "last_anomaly_level", json_object_new_string(states_string[s->last_anomaly_level]));
 
-    fprintf(stderr, "save_stats_json: writing to %s\n", path);
-
     rc = json_object_to_file_ext(path, root, JSON_C_TO_STRING_PRETTY);
     if (rc != 0) {
         perror("json_object_to_file_ext");
@@ -217,8 +215,6 @@ int save_history_json(const char *path, const history_stats *h) {
 
     json_object_object_add(root, "count", json_object_new_int((int)h->count));
     json_object_object_add(root, "records", records);
-
-    fprintf(stderr, "save_history_json: writing to %s\n", path);
 
     rc = json_object_to_file_ext(path, root, JSON_C_TO_STRING_PRETTY);
     if (rc != 0) {
