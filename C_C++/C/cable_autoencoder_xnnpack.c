@@ -16,7 +16,7 @@
 #include "./cable_autoencoder_xnnpack.h"
 
 const char *states_string[] = {"normal", "suspicious", "anomalous"};
-const char *const feature_names[14] = {
+const char *const feature_names[16] = {
     "frame_err_ppm",
     "length_err_ppm",
     "speed_change_count_10m",
@@ -26,12 +26,36 @@ const char *const feature_names[14] = {
     "phy_serdes_ber_errors_rate",
     "fcs_per_million_pkts",
     "rx_error_rate",
-    "host_rx_crc_rate",
-    "tx_dropped_rate",
+    //"host_rx_crc_rate",
+    //"tx_dropped_rate",
+    "phy_local_rcvr_nok_rate",
+    "phy_remote_rcv_nok_rate",
+    "mean_fcs_per_million",
+    "max_fcs_per_million",
     "utilization",
     "flaps_10m",
     "temp_slope_10m"
 };
+
+const char *const reasons[16] = {
+    "Elevated frame errors indicate damaged frames or link-quality problems",
+    "Elevated length errors indicate malformed or truncated Ethernet frames",
+    "Frequent speed changes in the last 10 minutes indicate unstable link negotiation",
+    "Link speed dropped below the previous speed, indicating degradation",
+    "Elevated RX error rate indicates increased receive-side packet errors",
+    "Rising PHY receive errors indicate physical-layer reception problems",
+    "Rising PHY SERDES BER errors indicate increased bit-error rate on the link",
+    "High FCS errors per million packets indicate corrupted frames on the wire",
+    "Rising RX error rate indicates worsening receive-path reliability",
+    "Rising PHY local receiver NOK rate indicates local receiver-side faults",
+    "Rising PHY remote receiver NOK rate indicates remote receiver-side faults",
+    "High mean FCS error level indicates sustained frame corruption over time",
+    "High peak FCS error level indicates severe short-term frame corruption spikes",
+    "Abnormal link utilization indicates unusual traffic load or congestion",
+    "Frequent link flaps in the last 10 minutes indicate unstable cable or port state",
+    "Rapid temperature slope in the last 10 minutes indicates thermal instability"
+};
+
 
 /* GLOBALS */
 struct model_config config;
@@ -46,44 +70,6 @@ static float nonneg_delta_u64(uint64_t curr, uint64_t prev) {
 static float safe_rate_u64(uint64_t curr, uint64_t prev, double dt_sec) {
     if (dt_sec <= 0.0 || curr < prev) return NAN;
     return (float)((curr - prev) / dt_sec);
-}
-
-static void rolling_push(rolling_window *w, double ts, float value, double span_sec) {
-    size_t end;
-
-    if (w->count == WINDOW_CAP) {
-        w->start = (w->start + 1) % WINDOW_CAP;
-        w->count--;
-    }
-
-    end = (w->start + w->count) % WINDOW_CAP;
-    w->ts[end] = ts;
-    w->val[end] = value;
-    w->count++;
-
-    while (w->count > 0 && (ts - w->ts[w->start]) > span_sec) {
-        w->start = (w->start + 1) % WINDOW_CAP;
-        w->count--;
-    }
-}
-
-static float rolling_sum(const rolling_window *w) {
-    float sum = 0.0f;
-    size_t i;
-    for (i = 0; i < w->count; ++i) {
-        size_t idx = (w->start + i) % WINDOW_CAP;
-        if (!isnan(w->val[idx])) sum += w->val[idx];
-    }
-    return sum;
-}
-
-static float rolling_first(const rolling_window *w) {
-    size_t i;
-    for (i = 0; i < w->count; ++i) {
-        size_t idx = (w->start + i) % WINDOW_CAP;
-        if (!isnan(w->val[idx])) return w->val[idx];
-    }
-    return NAN;
 }
 
 static int parse_ethtool_kv_u64(uint64_t *stat, char *ethtool_output, const char *input)
@@ -199,10 +185,14 @@ static int compute_cable_features( cable_feature_state *state,
     out->phy_serdes_ber_errors_rate = safe_rate_u64(curr->phy_serdes_ber_errors, state->prev.phy_serdes_ber_errors, dt_sec);
     out->fcs_per_million_pkts = (!isnan(fcs_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * fcs_delta / fmaxf(rx_pkts_delta, 1.0f))
                                                                              : NAN;
+    rolling_push(&state->fcs_ppm_10m, curr->ts_sec, out->fcs_per_million_pkts, SPAN_10MIN);
+    out->mean_fcs_per_million = rolling_avg(&state->fcs_ppm_10m);
+    out->max_fcs_per_million = rolling_max(&state->fcs_ppm_10m);
 
     out->rx_error_rate = safe_rate_u64(curr->rx_errors, state->prev.rx_errors, dt_sec);
-    out->host_rx_crc_rate = safe_rate_u64(curr->rx_crc_errors, state->prev.rx_crc_errors, dt_sec);
-    out->tx_dropped_rate = safe_rate_u64(curr->tx_dropped, state->prev.tx_dropped, dt_sec);
+
+    out->phy_local_rcvr_nok_rate = safe_rate_u64(curr->phy_local_rcvr_nok, state->prev.phy_local_rcvr_nok, dt_sec);
+    out->phy_remote_rcv_nok_rate = safe_rate_u64(curr->phy_remote_rcv_nok, state->prev.phy_remote_rcv_nok, dt_sec);
 
     rx_bps = safe_rate_u64(curr->rx_bytes, state->prev.rx_bytes, dt_sec) * BITS_PER_BYTE;
     tx_bps = safe_rate_u64(curr->tx_bytes, state->prev.tx_bytes, dt_sec) * BITS_PER_BYTE;
@@ -227,7 +217,7 @@ static int compute_cable_features( cable_feature_state *state,
     return 0;
 }
 
-static void pack_model_input(const cable_features *f, float input[14]) {
+static void pack_model_input(const cable_features *f, float input[16]) {
     input[0]  = f->frame_err_ppm;
     input[1]  = f->length_err_ppm;
     input[2]  = f->speed_change_count_10m;
@@ -237,11 +227,13 @@ static void pack_model_input(const cable_features *f, float input[14]) {
     input[6]  = f->phy_serdes_ber_errors_rate;
     input[7]  = f->fcs_per_million_pkts;
     input[8]  = f->rx_error_rate;
-    input[9]  = f->host_rx_crc_rate;
-    input[10] = f->tx_dropped_rate;
-    input[11] = f->utilization;
-    input[12] = f->flaps_10m;
-    input[13] = f->temp_slope_10m;
+    input[9] = f->phy_local_rcvr_nok_rate;
+    input[10] = f->phy_remote_rcv_nok_rate;
+    input[11] = f->mean_fcs_per_million;
+    input[12] = f->max_fcs_per_million;
+    input[13] = f->utilization;
+    input[14] = f->flaps_10m;
+    input[15] = f->temp_slope_10m;
 }
 
 void model_inputs_outputs(TfLiteInterpreter* interpreter)
@@ -454,11 +446,15 @@ static int ethtool_phy_stats(const char *iface, struct interface_stats *i_stats)
     char output[8192];
     char output1[8192];
     char output2[8192];
+    char output3[8192];
+    char output4[8192];
 
     memset(command, 0, sizeof(command));
     memset(output, 0, sizeof(output));
     memset(output1, 0, sizeof(output1));
     memset(output2, 0, sizeof(output2));
+    memset(output3, 0, sizeof(output3));
+    memset(output4, 0, sizeof(output4));
 
     snprintf(command, sizeof(command), "ethtool --phy-statistics %s", iface);
 
@@ -468,9 +464,13 @@ static int ethtool_phy_stats(const char *iface, struct interface_stats *i_stats)
 
     strncpy(output1, output, sizeof(output1) - 1);
     strncpy(output2, output, sizeof(output2) - 1);
+    strncpy(output3, output, sizeof(output3) - 1);
+    strncpy(output4, output, sizeof(output4) - 1);
 
     parse_ethtool_kv_u64(&i_stats->phy_receive_errors, output1, "phy_receive_errors");
     parse_ethtool_kv_u64(&i_stats->phy_serdes_ber_errors, output2, "phy_serdes_ber_errors");
+    parse_ethtool_kv_u64(&i_stats->phy_local_rcvr_nok, output3, "phy_local_rcvr_nok");
+    parse_ethtool_kv_u64(&i_stats->phy_remote_rcv_nok, output4, "phy_remote_rcv_nok");
 
     return 0;
 }
@@ -609,6 +609,24 @@ static void update_anomaly_metrics(float mse, float threshold, double timestamp,
 
 }
 
+/*
+ * something similar to argmax in python,
+ * get index of member with highest value
+ */
+static int get_argmax(float *array, size_t size) {
+    int max_idx = 0;
+    float max_val = array[0];
+
+    for (size_t i = 1; i < size; ++i) {
+        if (array[i] > max_val) {
+            max_val = array[i];
+            max_idx = i;
+        }
+    }
+
+    return max_idx;
+}
+
 int main() {
     int rc = 1;
     TfLiteModel* model = NULL;
@@ -629,9 +647,11 @@ int main() {
     cable_history_metrics history_metrics;
     cable_anomaly_history_metrics anomaly_metrics;
     history_stats history_obj;
+    stats stats_obj;
     float mse = 0.0f;
 
     memset(&history_obj, 0, sizeof(history_obj));
+    memset(&stats_obj, 0, sizeof(stats_obj));
     memset(&feature_state, 0, sizeof(feature_state));
     memset(&phy_stats, 0, sizeof(phy_stats));
     memset(&features, 0, sizeof(features));
@@ -740,15 +760,14 @@ int main() {
 
     while (1) {
         raw_sample sample;
+        int max_mse_index = 0;
         int res;
         int anomaly_level;
         struct interface_stats port_stats;
-        stats stats_obj;
         sample_history_record rec;
         float mse_per_feature[NUM_FEATURES];
 
         memset(&sample, 0, sizeof(sample));
-        memset(&stats_obj, 0, sizeof(stats_obj));
         memset(&rec, 0, sizeof(rec));
         memset(&phy_stats, 0, sizeof(phy_stats));
         memset(&port_stats, 0, sizeof(port_stats));
@@ -785,6 +804,8 @@ int main() {
         }
         sample.phy_receive_errors = phy_stats.phy_receive_errors;
         sample.phy_serdes_ber_errors = phy_stats.phy_serdes_ber_errors;
+        sample.phy_local_rcvr_nok = phy_stats.phy_local_rcvr_nok;
+        sample.phy_remote_rcv_nok = phy_stats.phy_remote_rcv_nok;
 
         res = invoke_model(interpreter, &feature_state, &sample, &features, &history_metrics, &mse, mse_per_feature);
         if (res == 1) {
@@ -815,7 +836,9 @@ int main() {
 
         update_anomaly_metrics(mse, config.threshold, sample.ts_sec, &feature_state, &anomaly_metrics);
         anomaly_level = classify_anomaly_level(mse, config.threshold);
-        update_stats(&stats_obj, mse, anomaly_level);
+
+        max_mse_index = get_argmax(mse_per_feature, sizeof(mse_per_feature));
+        update_stats(&stats_obj, mse, anomaly_level, reasons[max_mse_index]);
         build_sample_history_record(&rec,
                                     sample.ts_sec,
                                     mse,

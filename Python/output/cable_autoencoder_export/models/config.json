@@ -10,8 +10,10 @@
     "phy_serdes_ber_errors_rate",
     "fcs_per_million_pkts",
     "rx_error_rate",
-    "host_rx_crc_rate",
-    "tx_dropped_rate",
+    "phy_local_rcvr_nok_rate",
+    "phy_remote_rcv_nok_rate",
+    "mean_fcs_per_million",
+    "max_fcs_per_million",
     "utilization",
     "flaps_10m",
     "temp_slope_10m"
@@ -27,7 +29,9 @@
     4.0,
     4.0,
     3.0,
-    2.0,
+    3.0,
+    4.0,
+    4.0,
     1.0,
     3.0,
     1.0
@@ -46,6 +50,6 @@
   "epochs": 100,
   "early_stop_patience": 20,
   "threshold_quantile": 0.999,
-  "threshold": 0.05223405361175537,
+  "threshold": 0.046507999300956726,
   "export_dir": "output/cable_autoencoder_export"
 }

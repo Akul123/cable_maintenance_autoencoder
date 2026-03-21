@@ -26,4 +26,4 @@ export_dir: str = "output/cable_autoencoder_export"
 # Testing
 # MODEL_TO_TEST = '/workdir/project/cable_autoencoder/Python/output/cable_autoencoder_export/models/cable_autoencoder_quant_fp16.tflite'
 MODEL_TO_TEST = '/workdir/project/cable_autoencoder/Python/output/cable_autoencoder_export/models/cable_autoencoder_quant_int8.tflite'
-OUTPUT_JSON = '/workdir/project/cable_autoencoder/Python/output/cable_autoencoder_export/models/output.json'
+OUTPUT_JSON = '/workdir/project/cable_autoencoder/Python/output/cable_autoencoder_export/models/model_output.json'

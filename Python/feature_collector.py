@@ -381,7 +381,7 @@ def compute_cable_features(
     )
 
     # ---------- Port MAC integrity ----------
-    in_fcs = pick(port_stats, "rx_crc_errors")
+    in_fcs = pick(port_stats, "in_fcs_error", "rx_crc_errors", "rx_frame_check_sequence_errors")
     in_rx_err = get_rx_errors(port_stats)
     out_tx_err = get_tx_errors(port_stats)
     in_bad_octets = pick(port_stats, "in_bad_octets")
@@ -392,7 +392,7 @@ def compute_cable_features(
     in_discards = pick(port_stats, "in_discards")
     rx_packets = pick(port_stats, "rx_packets")
 
-    p_in_fcs = pick(state.prev_port, "in_fcs_error", "rx_crc_errors")
+    p_in_fcs = pick(state.prev_port, "in_fcs_error", "rx_crc_errors", "rx_frame_check_sequence_errors")
     p_in_rx_err = get_rx_errors(state.prev_port)
     p_out_tx_err = get_tx_errors(state.prev_port)
     p_in_bad_octets = pick(state.prev_port, "in_bad_octets")

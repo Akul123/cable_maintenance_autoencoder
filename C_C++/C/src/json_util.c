@@ -1,6 +1,8 @@
 #include <json-c/json.h>
 #include <string.h>
 #include "json_util.h"
+#include "time.h"
+#include "rolling_window.h"
 
 extern const char *states_string[];
 
@@ -14,8 +16,9 @@ int classify_anomaly_level(float mse, float threshold) {
     return ANOMALOUS;
 }
 
-void update_stats(stats *s, float mse, int anomaly_level) {
+void update_stats(stats *s, float mse, int anomaly_level, const char* reason) {
     int was_anomalous;
+    double timestamp = (double)time(NULL);
 
     if (!s) return;
 
@@ -30,10 +33,13 @@ void update_stats(stats *s, float mse, int anomaly_level) {
 
     if (anomaly_level == NORMAL) {
         s->total_normal_count++;
+        anomaly_event_push(&s->samples, timestamp, mse/*s->total_suspicious_count*/, NORMAL, "normal sample");
     } else if (anomaly_level == SUSPICIOUS) {
         s->total_suspicious_count++;
+        anomaly_event_push(&s->samples, timestamp, mse/*s->total_suspicious_count*/, SUSPICIOUS, reason);
     } else if (anomaly_level == ANOMALOUS) {
         s->total_anomalous_count++;
+        anomaly_event_push(&s->samples, timestamp, mse/*s->total_anomalous_count*/, ANOMALOUS, reason);
         if (!was_anomalous) {
             s->total_anomaly_events++;
         }
@@ -123,6 +129,7 @@ void build_sample_history_record(sample_history_record *rec,
 
 int save_stats_json(const char *path, const stats *s) {
     struct json_object *root;
+    struct json_object *stats_samples_records;
     int rc;
 
     if (!path || !s) return -1;
@@ -140,6 +147,19 @@ int save_stats_json(const char *path, const stats *s) {
     json_object_object_add(root, "max_mse_seen", json_object_new_double((double)s->max_mse_seen));
     json_object_object_add(root, "last_mse", json_object_new_double((double)s->last_mse));
     json_object_object_add(root, "last_anomaly_level", json_object_new_string(states_string[s->last_anomaly_level]));
+
+    stats_samples_records = json_object_new_array();
+    for (size_t i = 0; i < s->samples.count; ++i) {
+        size_t idx = (s->samples.start + i) % EVENT_WINDOW_CAP;
+        struct json_object *item = json_object_new_object();
+        json_object_object_add(item, "ts", json_object_new_double(s->samples.records[idx].ts));
+        json_object_object_add(item, "val", json_object_new_double(s->samples.records[idx].val));
+        json_object_object_add(item, "reason", json_object_new_string(s->samples.records[idx].reason));
+        json_object_object_add(item, "classifier", json_object_new_int(s->samples.records[idx].classifier));
+        json_object_array_add(stats_samples_records, item);
+    }
+
+    json_object_object_add(root, "samples_records", stats_samples_records);
 
     rc = json_object_to_file_ext(path, root, JSON_C_TO_STRING_PRETTY);
     if (rc != 0) {

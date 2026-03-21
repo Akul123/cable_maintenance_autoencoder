@@ -27,8 +27,13 @@ feature_cols: tuple = (
     "phy_serdes_ber_errors_rate", # rpi5
     "fcs_per_million_pkts",
     "rx_error_rate",
-    "host_rx_crc_rate",
-    "tx_dropped_rate",
+    #"host_rx_crc_rate",
+    #"tx_dropped_rate",
+    #"bad_octets_rate",
+    "phy_local_rcvr_nok_rate",
+    "phy_remote_rcv_nok_rate",
+    "mean_fcs_per_million",
+    "max_fcs_per_million",
     "utilization",
     "flaps_10m",
     "temp_slope_10m", #if it is not temp from NIC [/sys/class/hwmon/hwmonX/temp1_input] drop this feature

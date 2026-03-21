@@ -6,12 +6,6 @@
 
 #include "../cable_autoencoder_xnnpack.h"
 
-
-typedef struct top_feature_entry {
-    char name[64];
-    float error;
-} top_feature_entry;
-
 typedef struct sample_history_record {
     double ts_sec;
     float mse;
@@ -42,6 +36,10 @@ typedef struct stats {
     uint64_t total_suspicious_count;
     uint64_t total_anomalous_count;
     uint64_t total_anomaly_events;
+    anomaly_event_window samples;
+    // anomaly_event_window normal_samples;
+    // anomaly_event_window anomalous_samples;
+    // anomaly_event_window suspicious_samples;
     float max_mse_seen;
     float last_mse;
     int last_anomaly_level;
@@ -49,7 +47,7 @@ typedef struct stats {
 
 int classify_anomaly_level(float mse, float threshold);
 
-void update_stats(stats *s, float mse, int anomaly_level);
+void update_stats(stats *s, float mse, int anomaly_level, const char *reason);
 void history_push_record(history_stats *h, const sample_history_record *rec);
 
 void fill_top3_features(sample_history_record *rec,
