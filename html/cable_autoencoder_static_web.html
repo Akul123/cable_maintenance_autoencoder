@@ -5,7 +5,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Cable History Viewer</title>
+  <title>Cable History Viewer [eth0]</title>
   <script src="./chart.umd.js"></script>
   <script src="./hammer.min.js"></script>
   <script src="./chartjs-plugin-zoom.min.js"></script>
@@ -120,9 +120,7 @@
 <body>
   <div class="wrap">
     <div class="panel">
-      <h1>Cable History Viewer</h1>
-      <div class="sub">Loads `history.json` and plots anomaly history over time.</div>
-      <h3>eth0 all time statistics</h3>
+      <h1>Cable History Viewer [eth0]</h1>
       <div class="meta">
         <div class="card">
           <div class="label">Total samples</div>
@@ -146,65 +144,37 @@
         </div>
       </div>
       <hr/>
-      <h3>Latest sample</h3>
-      <div class="controls">
-        <!-- <input type="file" id="fileInput" accept=".json" /> -->
-        <select id="metricSelect">
-          <!-- <option value="mse">mse</option> -->
-          <option value="speed_change_count_10m">speed_change_count_10m</option>
-          <option value="flaps_10m">flaps_10m</option>
-          <option value="temp_slope_10m">temp_slope_10m</option>
-          <option value="speed_change_count_1h">speed_change_count_1h</option>
-          <option value="flaps_1h">flaps_1h</option>
-          <option value="temp_slope_1h">temp_slope_1h</option>
-          <option value="anomalous_count_1h">anomalous_count_1h</option>
-          <option value="suspicious_count_1h">suspicious_count_1h</option>
-        </select>
-        <!-- <button id="loadSample">Load Sample Path Hint</button> -->
-      </div>
-      <div class="meta">
-        <!-- <div class="card">
-          <div class="label">Record count</div>
-          <div class="value" id="recordCount">-</div>
-        </div> -->
-        <div class="card">
-          <div class="label">Latest anomaly level</div>
-          <div class="value" id="latestLevel">-</div>
+      <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+        <div style="flex: 1 1 400px;">
+          <canvas id="pieStatsChart"></canvas>
         </div>
-        <div class="card">
-          <div class="label">Latest summary</div>
-          <div class="value" id="latestTop">-</div>
+        <div style="flex: 1 1 400px;">
+          <canvas id="statsChart"></canvas>
         </div>
       </div>
-
       <canvas id="historyChart"></canvas>
+      <canvas id="historyScoreChart"></canvas>
       <hr/>
-      <canvas id="statsChart"></canvas>
-      <div class="hint" id="hint">
-        Open a local `history.json` file exported by server.
-      </div>
     </div>
   </div>
 
   <script>
     const histChartCtx = document.getElementById("historyChart");
+    const histScoreChartCtx = document.getElementById("historyScoreChart");
     const statsChartCtx = document.getElementById("statsChart");
-    //const fileInput = document.getElementById("fileInput");
-    const metricSelect = document.getElementById("metricSelect");
-    //const recordCount = document.getElementById("recordCount");
-    const latestLevel = document.getElementById("latestLevel");
-    const latestTop = document.getElementById("latestTop");
+    const pieStatsChartCtx = document.getElementById("pieStatsChart");
     const totalSamples = document.getElementById("totalSamples");
     const totalNormalCount = document.getElementById("totalNormalCount");
     const totalSuspiciousCount = document.getElementById("totalSuspiciousCount");
     const totalAnomalousCount = document.getElementById("totalAnomalousCount");
     const totalAnomalyEvents = document.getElementById("totalAnomalyEvents");
-    const hint = document.getElementById("hint");
-    const threshold = 0.046507999300956726; // in future get it from server
+    let threshold = 0;
 
     let histData = null;
     let statsData = null;
     let histChart = null;
+    let histScoreChart = null;
+    let pieStatsChart = null;
     let statsChart = null;
 
     const NORMAL = 0
@@ -213,142 +183,201 @@
 
     const classificationNames = ["NORMAL", "SUSPICIOUS", "ANOMALOUS"]
 
-    function levelToColor(level) {
-      if (level === "ANOMALOUS") return "#b91c1c";
-      if (level === "SUSPICIOUS") return "#d97706";
-      return "#15803d";
-    }
-
-    function valueToColor(value, min, max) {
-      if (max === min) return "rgb(255,255,0)";
-
-      const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
-
-      let r, g;
-
-      if (t < 0.5) {
-        const k = t / 0.5;
-        r = Math.round(255 * k);
-        g = 255;
-      } else {
-        const k = (t - 0.5) / 0.5;
-        r = 255;
-        g = Math.round(255 * (1 - k));
-      }
-
-      return `rgb(${r}, ${g}, 0)`;
-    }
-
-    function lerp(a, b, t) {
-      return Math.round(a + (b - a) * t);
-    }
-
-    function blendColor(c1, c2, t) {
-      return `rgb(${lerp(c1[0], c2[0], t)}, ${lerp(c1[1], c2[1], t)}, ${lerp(c1[2], c2[2], t)})`;
-    }
-
-    function clamp01(x) {
-      return Math.max(0, Math.min(1, x));
-    }
-
-    // normal: green -> yellow
-    // suspicious: yellow -> red
-    // anomalous: red -> dark red
-    function colorFromClassifierAndValue(classifier, value, ranges) {
-      const green = [0, 200, 0];
-      const yellow = [255, 220, 0];
-      const red = [230, 0, 0];
-      const darkRed = [140, 0, 0];
-
-      if (classifier === 0) {
-        const t = clamp01((value - ranges.normalMin) / (ranges.normalMax - ranges.normalMin));
-        return blendColor(green, yellow, t);
-      }
-
-      if (classifier === 1) {
-        const t = clamp01((value - ranges.suspiciousMin) / (ranges.suspiciousMax - ranges.suspiciousMin));
-        return blendColor(yellow, red, t);
-      }
-
-      if (classifier === 2) {
-        const t = clamp01((value - ranges.anomalousMin) / (ranges.anomalousMax - ranges.anomalousMin));
-        return blendColor(red, darkRed, t);
-      }
-
-      return "rgb(128,128,128)";
-    }
-
-    function buildChart(hist, stats, metricKey) {
-
-      if (!hist || !stats)
+    function buildPieStatsChart(stats) {
+      if (!stats)
         return;
 
-      // history data
-      const historyRecords = Array.isArray(hist.records) ? hist.records : [];
-      const histLabels = historyRecords.map(r => new Date((r.ts_sec || 0) * 1000).toLocaleString());
-      const mseData = historyRecords.map(r => r.mse ?? null);
-      const metricData = historyRecords.map(r => r[metricKey] ?? null);
-      const pointColors = historyRecords.map(r => levelToColor(r.anomaly_level));
-
-      // all time data
       const totalSamplesValue = stats.total_samples;
       const totalNormalCountValue = stats.total_normal_count;
       const totalSuspiciousCountValue = stats.total_suspicious_count;
       const totalAnomalousCountValue = stats.total_anomalous_count;
-      const totalAnomalyEventsValue = stats.total_anomaly_events;
-      const statsSampleRecords = Array.isArray(stats.samples_records) ? stats.samples_records : [];
-      const statsSampleLabels = statsSampleRecords.map(r => new Date((r.ts || 0) * 1000).toLocaleString());
-      const statsSampleMse = statsSampleRecords.map(r => r.val ?? null);
-      const statsSampleClassifier = statsSampleRecords.map(r => r?.classifier ?? null);
-      const statsSampleClassifierNames = statsSampleRecords.map(r => {
-        if(r.classifier == NORMAL) return 'NORMAL';
-        if(r.classifier == SUSPICIOUS) return 'SUSPICIOUS';
-        if(r.classifier == ANOMALOUS) return 'ANOMALOUS';
-        return 'UNKNOWN';
+
+      if (pieStatsChart)
+        pieStatsChart.destroy();
+
+      pieStatsChart = new Chart(pieStatsChartCtx, {
+        type: 'pie',
+        data: {
+          labels: ['Normal', 'Suspicious', 'Anomalous'],
+          datasets: [{
+            data: [totalNormalCountValue, totalSuspiciousCountValue, totalAnomalousCountValue],
+            backgroundColor: [
+              '#4CAF50',
+              '#FFC107',
+              '#F44336'
+            ],
+            borderColor: '#fff',
+            borderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: {
+              position: 'top'
+            },
+            title: {
+              display: true,
+              text: 'Anomaly Distribution'
+            },
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  const value = context.raw;
+                  const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                  const pct = ((value / total) * 100).toFixed(1);
+                  return `${context.label}: ${value} (${pct}%)`;
+                }
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function buildStatsChart(stats) {
+      if (!stats)
+        return;
+
+      const featureCounts = Array.isArray(stats.feature_counts) ? stats.feature_counts : [];
+      const featureCountsVals = featureCounts.map(f => f.val ?? null);
+      const featureCountsLabels = featureCounts.map(f => f.name ?? null);
+
+      if (statsChart)
+        statsChart.destroy();
+
+      statsChart = new Chart(statsChartCtx, {
+        type: 'bar',
+        data: {
+          labels: featureCountsLabels,
+          datasets: [{
+            label: 'Top anomaly contributors',
+            data: featureCountsVals,
+            backgroundColor: ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2'],
+            borderRadius: 6
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          plugins: {
+            legend: {
+              display: false
+            },
+            title: {
+              display: true,
+              text: 'Horizontal Bar Chart Example'
+            }
+          },
+          scales: {
+            x: {
+              beginAtZero: true
+            }
+          }
+        }
+      });
+    }
+
+    function levelToColor(level) {
+      if (level === "anomalous") return "#F44336";
+      if (level === "suspicious") return "#FFC107";
+      return "#4CAF50";
+    }
+
+    function scaleToRange(value, inMin, inMax, outMin, outMax) {
+      if (inMax <= inMin) return outMin;
+      const t = Math.max(0, Math.min(1, (value - inMin) / (inMax - inMin)));
+      return outMin + t * (outMax - outMin);
+    }
+
+    function buildHistoryChart(hist) {
+      if (!hist)
+        return;
+
+      const historyRecords = Array.isArray(hist.records) ? hist.records : [];
+      const histLabels = historyRecords.map(r => new Date((r.ts_sec || 0) * 1000).toLocaleString());
+      const mseData = historyRecords.map(r => r.mse ?? null);
+      const pointColors = historyRecords.map(r => levelToColor(r.anomaly_level));
+      const barData = historyRecords.map(r => {
+        if (r.anomaly_level === "anomalous") return [0, 5];
+        if (r.anomaly_level === "suspicious") return [0, 2];
+        return [0, 1];
       });
 
+      const barColors = historyRecords.map(r => {
+        if (r.anomaly_level === "anomalous") return "#F44336";
+        if (r.anomaly_level === "suspicious") return "#FFC107";
+        return "#4CAF50";
+      });
       if (histChart)
         histChart.destroy();
 
-      if(statsChart)
-        statsChart.destroy();
-
-      // const classifierColors = statsSampleClassifier.map(c => {
-      //   if (c == NORMAL) return "#00cc00";
-      //   if (c === ANOMALOUS) return "#e60000";
-      //   if (c === SUSPICIOUS) return "#ffff33";
-      // });
-
-      const scatterData = statsSampleRecords.map(r => ({
-        x: r.ts,
-        y: r.val ?? null
-      }));
-
       histChart = new Chart(histChartCtx, {
-        type: "line",
+        type: 'bar',
         data: {
           labels: histLabels,
+          datasets: [{
+            label: 'Anomaly level',
+            data: barData, //mseData,
+            backgroundColor: barColors, //pointColors,
+            borderColor: barColors, //pointColors,
+            borderWidth: 1
+          }]
+        },
+        options: {
+          responsive: true,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { position: 'top' },
+            title: {
+              display: true,
+              text: 'Anomalies on eth0 interface in last ~4 hours'
+            }
+          },
+          scales: {
+            x: {
+              ticks: {
+                autoSkip: true,
+                maxTicksLimit: 20,
+                maxRotation: 45,
+                minRotation: 45
+              }
+            },
+            y: {
+              beginAtZero: true,
+              title: { display: true, text: 'mse' }
+            }
+          }
+        }
+      });
+    }
+
+    function buildHistoryScoreChart(stats) {
+      if (!stats)
+        return;
+
+      const historyScoreRecords = Array.isArray(stats.history_score) ? stats.history_score : [];
+      const histScoreVal = historyScoreRecords.map(r => r.val ?? null);
+      const histScoreLabels = historyScoreRecords.map(r => new Date((r.ts || 0) * 1000).toLocaleString());
+
+      if(histScoreChart)
+        histScoreChart.destroy();
+
+      histScoreChart = new Chart(histScoreChartCtx, {
+        type: "line",
+        data: {
+          labels: histScoreLabels,
           datasets: [
             {
-              label: "mse",
-              data: mseData,
+              label: "anomaly score",
+              data: histScoreVal,
               borderColor: "#c2410c",
               backgroundColor: "rgba(194, 65, 12, 0.15)",
               tension: 0.25,
               yAxisID: "y",
-              pointBackgroundColor: pointColors,
-              //pointRadius: 4,
+              pointBackgroundColor: "#c2410c",
               pointRadius: 2,
               pointHoverRadius: 5
-            },
-            {
-              label: metricKey,
-              data: metricData,
-              borderColor: "#0f766e",
-              backgroundColor: "rgba(15, 118, 110, 0.15)",
-              tension: 0.25,
-              yAxisID: "y1",
-              pointRadius: 2
             }
           ]
         },
@@ -359,19 +388,21 @@
             legend: { position: "top" },
             title: {
               display: true,
-              text: 'Anomalies on eth0 interface in last ~4 hours'
+              text: 'Anomaly score on eth0 interface in last ~5 days'
             },
             zoom: {
               pan: {
                 enabled: true,
-                mode: 'x'
+                mode: 'x',
+                modifierKey: 'shift'
               },
               zoom: {
                 drag: {
                   enabled: true
                 },
                 wheel: {
-                  enabled: true
+                  enabled: true,
+                  modifierKey: 'ctrl'
                 },
                 pinch: {
                   enabled: true
@@ -383,13 +414,10 @@
               callbacks: {
                 afterBody(items) {
                   const i = items[0].dataIndex;
-                  const rec = historyRecords[i];
-                  const top = rec.top3 && rec.top3[0]
-                    ? `${rec.top3[0].name} (${rec.top3[0].error})`
-                    : "n/a";
+                  const rec = historyScoreRecords[i];
                   return [
-                    `anomaly_level: ${rec.anomaly_level ?? "n/a"}`,
-                    `top feature: ${top}`
+                    `anomaly_level: ${rec.val ?? "n/a"}`,
+                    `timestamp: ${new Date((rec.ts || 0) * 1000).toLocaleString() ?? "n/a"}`
                   ];
                 }
               }
@@ -408,128 +436,38 @@
             y: {
               type: "linear",
               position: "left",
-              title: { display: true, text: "mse" },
+              title: { display: true, text: "anomaly score" },
               grid: { color: "rgba(31, 41, 55, 0.12)" }
-            },
-            y1: {
-              type: "linear",
-              position: "right",
-              title: { display: true, text: metricKey },
-              grid: { drawOnChartArea: false }
             }
           }
         }
       });
+    }
 
-      const minMse = Math.min(...statsSampleMse);
-      const maxMse = Math.max(...statsSampleMse);
+    function buildChart(hist, stats) {
 
-      const ranges = {
-        normalMin: 0.0,
-        normalMax: 0.9*threshold,
-        suspiciousMin: 0.9*threshold,
-        suspiciousMax: threshold,
-        anomalousMin: threshold,
-        anomalousMax: 999999999
-      };
+      if (!hist || !stats)
+        return;
 
-      const classifierColors = statsSampleRecords.map(r =>
-        colorFromClassifierAndValue(r.classifier, r.val ?? 0, ranges)
-      );
+      threshold = stats.threshold
 
-      statsChart = new Chart(statsChartCtx, {
-      type: 'line',
-      data: {
-        labels: statsSampleLabels,
-        datasets: [{
-          label: 'mse',
-          data: statsSampleMse,
-          showLine: false,
-          tension: 0.25,
-          borderColor: "#c2410c",
-          backgroundColor: "rgba(194, 65, 12, 0.15)",
-          segment: {
-            borderColor: ctx => valueToColor(ctx.p1.parsed.y, minMse, maxMse)
-          },
-          pointBackgroundColor: classifierColors, //statsSampleMse.map(v => valueToColor(v, minMse, maxMse)),
-          pointBorderColor: classifierColors,//statsSampleMse.map(v => valueToColor(v, minMse, maxMse)),
-          pointRadius: 2,
-          pointHoverRadius: 5
-        }]
-        },
-        options: {
-          responsive: true,
-          interaction: { mode: "index", intersect: false },
-          plugins: {
-            legend: { position: "top" },
-            title: {
-              display: true,
-              text: 'Anomalies on eth0 interface in last 5 days'
-            },
-            zoom: {
-              pan: {
-                enabled: true,
-                mode: 'x'
-              },
-              zoom: {
-                drag: {
-                  enabled: true
-                },
-                wheel: {
-                  enabled: true
-                },
-                pinch: {
-                  enabled: true
-                },
-                mode: 'x'
-              }
-            },
-            tooltip: {
-              callbacks: {
-                label(context) {
-                  const i = context.dataIndex;
-                  const rec = statsSampleRecords[i];
-                  return [
-                    `value: ${rec?.val ?? "n/a"}`,
-                    `class: ${statsSampleClassifierNames[i] ?? "n/a"}`,
-                    `reason: ${rec?.reason ?? "n/a"}`,
-                    `date: ${new Date((rec?.ts || 0) * 1000).toLocaleString()}`
-                  ];
-                }
-              }
-            }
-          },
-          scales: {
-            x: {
-              ticks: {
-                autoSkip: true,
-                maxTicksLimit: 20,
-                maxRotation: 45,
-                minRotation: 45
-              },
-              grid: { color: "rgba(31, 41, 55, 0.08)" }
-            },
-            y: {
-              type: "linear",
-              position: "left",
-              title: { display: true, text: "mse" },
-              grid: { color: "rgba(31, 41, 55, 0.12)" }
-            }
-          }
-      }
-    });
-
-      //recordCount.textContent = hist.count ?? historyRecords.length ?? 0;
-
-      const latest = historyRecords[historyRecords.length - 1];
-      latestLevel.textContent = latest?.anomaly_level ?? "-";
-      latestTop.textContent = `${latest?.top3?.[0]?.name ?? "-"} | A:${latest?.anomalous_count_1h ?? 0} S:${latest?.suspicious_count_1h ?? 0}`;
+      // // all time data
+      const totalSamplesValue = stats.total_samples;
+      const totalNormalCountValue = stats.total_normal_count;
+      const totalSuspiciousCountValue = stats.total_suspicious_count;
+      const totalAnomalousCountValue = stats.total_anomalous_count;
+      const totalAnomalyEventsValue = stats.total_anomaly_events;
 
       totalSamples.textContent = `${totalSamplesValue ?? "-"}`;
       totalNormalCount.textContent = `${totalNormalCountValue ?? "-"}`;
       totalSuspiciousCount.textContent = `${totalSuspiciousCountValue ?? "-"}`;
       totalAnomalousCount.textContent = `${totalAnomalousCountValue ?? "-"}`;
       totalAnomalyEvents.textContent = `${totalAnomalyEventsValue ?? "-"}`;
+
+      buildPieStatsChart(statsData);
+      buildStatsChart(statsData);
+      buildHistoryChart(hist);
+      buildHistoryScoreChart(stats);
     }
 
     async function loadHistoryFromServer() {
@@ -545,38 +483,11 @@
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             statsData = await resp.json();
 
-            buildChart(histData, statsData, metricSelect.value);
-            hint.textContent = "History loaded from target.";
+            buildChart(histData, statsData);
         } catch (err) {
-            hint.textContent = `Failed to load history.json: ${err.message}`;
+            console.log("Failed to load history,json ${err.message}");
         }
     }
-
-    // function loadJsonText(text) {
-    //   try {
-    //     const data = JSON.parse(text);
-    //     histData = data;
-    //     buildChart(histData, statsData, metricSelect.value);
-    //     hint.textContent = "History loaded successfully.";
-    //   } catch (err) {
-    //     hint.textContent = `Invalid JSON: ${err.message}`;
-    //   }
-    // }
-
-    // fileInput.addEventListener("change", async (e) => {
-    //   const file = e.target.files?.[0];
-    //   if (!file) return;
-    //   loadJsonText(await file.text());
-    // });
-
-    metricSelect.addEventListener("change", () => {
-      if (histData && statsData) buildChart(histData, statsData, metricSelect.value);
-    });
-
-    // document.getElementById("loadSample").addEventListener("click", () => {
-    //   hint.textContent =
-    //     "If running on target, your JSON is likely at /var/lib/cable_autoencoder_xnnpack/history.json";
-    // });
 
     loadHistoryFromServer()
     setInterval(loadHistoryFromServer, 30000);

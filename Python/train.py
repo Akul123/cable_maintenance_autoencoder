@@ -26,9 +26,6 @@ class Config:
         "phy_serdes_ber_errors_rate", # rpi5
         "fcs_per_million_pkts",
         "rx_error_rate",
-        #"host_rx_crc_rate",
-        #"tx_dropped_rate",
-        #"bad_octets_rate",
         "phy_local_rcvr_nok_rate",
         "phy_remote_rcv_nok_rate",
         "mean_fcs_per_million",
@@ -40,25 +37,22 @@ class Config:
     # Weighting (aligned with feature_cols order)
     # Example: emphasize error-related features
     feature_weights: tuple = (
-        2.5,  # frame_err_ppm
-        2.0,  # length_err_ppm
-        2.0,  # speed_change_count_10m
-        1.5,  # speed_is_downgraded
-        3.0,  # rx_err_ppm
-        3.0,  # phy_receive_errors_rate
-        2.0,  # phy_serdes_ber_errors_rate
-        4.0,  # fcs_per_million_pkts
-        4.0,  # rx_error_rate
-        #3.0,  # host_rx_crc_rate
-        #2.0,  # tx_dropped_rate
-        #4.0,  # bad_octets_rate
-        3.0,  # phy_local_rcvr_nok_rate
-        3.0,  # phy_remote_rcv_nok_rate
-        4.0,  # mean_fcs_per_million
-        4.0,  # max_fcs_per_million
-        1.0,  # utilization
-        3.0,  # flaps_10m
-        1.0,  # temp_slope_10m
+        1.5, # 2.5,  # frame_err_ppm
+        1.5, # 2.0,  # length_err_ppm
+        1.0, # 2.0,  # speed_change_count_10m
+        1.0, # 1.5,  # speed_is_downgraded
+        1.5, # 3.0,  # rx_err_ppm
+        1.5, # 3.0,  # phy_receive_errors_rate
+        1.5, # 2.0,  # phy_serdes_ber_errors_rate
+        1.5, # 4.0,  # fcs_per_million_pkts
+        1.5, # 4.0,  # rx_error_rate
+        1.5, # 3.0,  # phy_local_rcvr_nok_rate
+        1.5, # 3.0,  # phy_remote_rcv_nok_rate
+        1.5, # 4.0,  # mean_fcs_per_million
+        1.5, # 4.0,  # max_fcs_per_million
+        1.0, # 1.0,  # utilization
+        1.5, # 3.0,  # flaps_10m
+        1.0,  # 1.0,  # temp_slope_10m
     )
     missing_indicator_weight: float = Config.missing_indicator_weight
     add_missing_indicators: bool = Config.add_missing_indicators

@@ -1,8 +1,9 @@
 {
     "model_name": "cable_autoencoder_tflite",
-    "model_path": "../../Python/output/cable_autoencoder_export/models/cable_autoencoder_quant_fp16.tflite",
+    "model_path": "/etc/cable_autoencoder/cable_autoencoder_quant_fp16.tflite",
     "vocabs_path": "",
     "enabled_acceleration": true,
     "xnnpack_num_threads": 2,
-    "fallback_num_threads": 2
+    "fallback_num_threads": 2,
+    "threshold": 0.0344340056180954 //copied from training Python/output/cable_autoencoder_export/models/config.json
 }

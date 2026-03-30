@@ -231,7 +231,7 @@ class CableAutoencoder:
         )
         ckpt.write(f"{save_path}/stats.ckpt")
 
-        with tf.io.gfile.GFile(f"{save_path}/config.json", "w") as f:
+        with tf.io.gfile.GFile(f"{save_path}/config_output.json", "w") as f:
             json.dump(asdict(self.cfg), f, indent=2)
 
     # # save model to directory

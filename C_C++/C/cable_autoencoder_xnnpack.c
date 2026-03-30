@@ -16,7 +16,7 @@
 #include "./cable_autoencoder_xnnpack.h"
 
 const char *states_string[] = {"normal", "suspicious", "anomalous"};
-const char *const feature_names[16] = {
+const char *const feature_names[NUM_FEATURES] = {
     "frame_err_ppm",
     "length_err_ppm",
     "speed_change_count_10m",
@@ -35,6 +35,25 @@ const char *const feature_names[16] = {
     "utilization",
     "flaps_10m",
     "temp_slope_10m"
+};
+
+const char *const feature_display_names[NUM_FEATURES] = {
+    "Frame Errors",
+    "Length Errors",
+    "Speed Changes (10m)",
+    "Speed Downgrade",
+    "RX Errors",
+    "PHY RX Errors",
+    "SerDes BER Errors",
+    "FCS / 1M Packets",
+    "RX Error Rate",
+    "Local Receiver NOK",
+    "Remote Receiver NOK",
+    "Avg FCS / 1M",
+    "Max FCS / 1M",
+    "Utilization",
+    "Link Flaps (10m)",
+    "Temp Trend (10m)"
 };
 
 const char *const reasons[16] = {
@@ -227,7 +246,7 @@ static void pack_model_input(const cable_features *f, float input[16]) {
     input[6]  = f->phy_serdes_ber_errors_rate;
     input[7]  = f->fcs_per_million_pkts;
     input[8]  = f->rx_error_rate;
-    input[9] = f->phy_local_rcvr_nok_rate;
+    input[9]  = f->phy_local_rcvr_nok_rate;
     input[10] = f->phy_remote_rcv_nok_rate;
     input[11] = f->mean_fcs_per_million;
     input[12] = f->max_fcs_per_million;
@@ -838,7 +857,7 @@ int main() {
         anomaly_level = classify_anomaly_level(mse, config.threshold);
 
         max_mse_index = get_argmax(mse_per_feature, sizeof(mse_per_feature));
-        update_stats(&stats_obj, mse, anomaly_level, reasons[max_mse_index]);
+        update_stats(&stats_obj, mse, anomaly_level, reasons[max_mse_index], max_mse_index, config.threshold);
         build_sample_history_record(&rec,
                                     sample.ts_sec,
                                     mse,

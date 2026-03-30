@@ -6,6 +6,19 @@
 
 extern const char *states_string[];
 
+const char *radar_labels[] = {
+    "Frame Errors / 1M Packets",
+    "Length Errors / 1M Packets",
+    "RX Errors",
+    "PHY RX Errors",
+    "SerDes BER Errors",
+    "FCS / 1M Packets",
+    "RX Error Rate",
+    "Local Receiver NOK",
+    "Remote Receiver NOK",
+    "Utilization"
+};
+
 int classify_anomaly_level(float mse, float threshold) {
     if (mse <= 0.9f * threshold) {
         return NORMAL;
@@ -16,7 +29,7 @@ int classify_anomaly_level(float mse, float threshold) {
     return ANOMALOUS;
 }
 
-void update_stats(stats *s, float mse, int anomaly_level, const char* reason) {
+void update_stats(stats *s, float mse, int anomaly_level, const char* reason, int max_mse_index, float threshold) {
     int was_anomalous;
     double timestamp = (double)time(NULL);
 
@@ -26,24 +39,43 @@ void update_stats(stats *s, float mse, int anomaly_level, const char* reason) {
 
     s->total_samples++;
     s->last_mse = mse;
+    s->threshold = threshold;
 
     if (s->total_samples == 1 || mse > s->max_mse_seen) {
         s->max_mse_seen = mse;
     }
 
+    /* anomaly_event records*/
     if (anomaly_level == NORMAL) {
         s->total_normal_count++;
-        anomaly_event_push(&s->samples, timestamp, mse/*s->total_suspicious_count*/, NORMAL, "normal sample");
+        anomaly_event_push(&s->samples, timestamp, mse, NORMAL, "normal sample");
     } else if (anomaly_level == SUSPICIOUS) {
         s->total_suspicious_count++;
-        anomaly_event_push(&s->samples, timestamp, mse/*s->total_suspicious_count*/, SUSPICIOUS, reason);
+        anomaly_event_push(&s->samples, timestamp, mse, SUSPICIOUS, reason);
     } else if (anomaly_level == ANOMALOUS) {
         s->total_anomalous_count++;
-        anomaly_event_push(&s->samples, timestamp, mse/*s->total_anomalous_count*/, ANOMALOUS, reason);
+        anomaly_event_push(&s->samples, timestamp, mse, ANOMALOUS, reason);
         if (!was_anomalous) {
             s->total_anomaly_events++;
         }
     }
+
+    /* history score records */
+    // float sample_term = 0.3f * log1pf(fmaxf(mse, 0.0f));
+    float history_term =
+        0.20f * log1pf((float)s->total_suspicious_count) +
+        0.60f * log1pf((float)s->total_anomalous_count) +
+        0.80f * log1pf((float)s->total_anomaly_events);
+
+    // float val = sample_term + history_term;
+    float val = history_term;
+
+    history_score_push(&s->history_score, timestamp, val);
+
+    // in case of anomaly sample increment count
+    // for feature with biggest mse
+    if(anomaly_level==ANOMALOUS)
+        s->feature_counts[max_mse_index]++;
 
     s->last_anomaly_level = anomaly_level;
 }
@@ -127,9 +159,16 @@ void build_sample_history_record(sample_history_record *rec,
     fill_top3_features(rec, feature_errors, feature_names, NUM_FEATURES);
 }
 
+static void feature_to_json(struct json_object *feature_counts_json, const char *name, uint16_t val) {
+    json_object *item = json_object_new_object();
+    json_object_object_add(item, "name", json_object_new_string(name));
+    json_object_object_add(item, "val", json_object_new_double(val));
+    json_object_array_add(feature_counts_json, item);
+}
+
 int save_stats_json(const char *path, const stats *s) {
     struct json_object *root;
-    struct json_object *stats_samples_records;
+    struct json_object *stats_samples_records, *stats_history_score_records, *feature_counts;
     int rc;
 
     if (!path || !s) return -1;
@@ -147,19 +186,90 @@ int save_stats_json(const char *path, const stats *s) {
     json_object_object_add(root, "max_mse_seen", json_object_new_double((double)s->max_mse_seen));
     json_object_object_add(root, "last_mse", json_object_new_double((double)s->last_mse));
     json_object_object_add(root, "last_anomaly_level", json_object_new_string(states_string[s->last_anomaly_level]));
+    json_object_object_add(root, "threshold", json_object_new_double((double)s->threshold));
 
+    /* samples records */
     stats_samples_records = json_object_new_array();
     for (size_t i = 0; i < s->samples.count; ++i) {
         size_t idx = (s->samples.start + i) % EVENT_WINDOW_CAP;
         struct json_object *item = json_object_new_object();
-        json_object_object_add(item, "ts", json_object_new_double(s->samples.records[idx].ts));
-        json_object_object_add(item, "val", json_object_new_double(s->samples.records[idx].val));
+        json_object_object_add(item, "ts", json_object_new_double(s->samples.records[idx].event.ts));
+        json_object_object_add(item, "val", json_object_new_double(s->samples.records[idx].event.val));
         json_object_object_add(item, "reason", json_object_new_string(s->samples.records[idx].reason));
         json_object_object_add(item, "classifier", json_object_new_int(s->samples.records[idx].classifier));
         json_object_array_add(stats_samples_records, item);
     }
-
     json_object_object_add(root, "samples_records", stats_samples_records);
+
+    /* history score records */
+    stats_history_score_records = json_object_new_array();
+    for (size_t i = 0; i < s->samples.count; ++i) {
+        size_t idx = (s->samples.start + i) % EVENT_WINDOW_CAP;
+        struct json_object *item = json_object_new_object();
+        json_object_object_add(item, "ts", json_object_new_double(s->history_score.records[idx].ts));
+        json_object_object_add(item, "val", json_object_new_double(s->history_score.records[idx].val));
+        json_object_array_add(stats_history_score_records, item);
+    }
+    json_object_object_add(root, "history_score", stats_history_score_records);
+
+    /* feature counts */
+    // feature_counts = json_object_new_array();
+    // for (size_t i = 0; i < NUM_FEATURES; ++i) {
+    //     struct json_object *item = json_object_new_object();
+    //     json_object_object_add(item, "name", json_object_new_string(feature_display_names[i]));
+    //     json_object_object_add(item, "val", json_object_new_int(s->feature_counts[i]));
+    //     json_object_array_add(feature_counts, item);
+    // }
+    // json_object_object_add(root, "feature_counts", feature_counts);
+// const char *const feature_display_names[NUM_FEATURES] = {
+//     "Frame Errors",
+//     "Length Errors",
+//     "Speed Changes (10m)",
+//     "Speed Downgrade",
+//     "RX Errors",
+//     "PHY RX Errors",
+//     "SerDes BER Errors",
+//     "FCS / 1M Packets",
+//     "RX Error Rate",
+//     "Local Receiver NOK",
+//     "Remote Receiver NOK",
+//     "Avg FCS / 1M",
+//     "Max FCS / 1M",
+//     "Utilization",
+//     "Link Flaps (10m)",
+//     "Temp Trend (10m)"
+// };
+// const char* const radar_labels = {
+//     "Frame Errors",
+//     "Length Errors",
+//     "RX Errors",
+//     "PHY RX Errors",
+//     "SerDes BER Errors",
+//     "FCS / 1M Packets",
+//     "RX Error Rate",
+//     "Local Receiver NOK",
+//     "Remote Receiver NOK",
+//     "Utilization"
+// };
+    // map between feature_display_names & radar_labels
+    static const int radar_feature_idx[10] = {
+        0,   /* Frame Errors */
+        1,   /* Length Errors */
+        4,   /* RX Errors */
+        5,   /* PHY RX Errors */
+        6,   /* SerDes BER Errors */
+        7,   /* FCS / 1M Packets */
+        8,   /* RX Error Rate */
+        9,   /* Local Receiver NOK */
+        10,  /* Remote Receiver NOK */
+        13   /* Utilization */
+    };
+
+    feature_counts = json_object_new_array();
+    for (size_t i = 0; i < 10; ++i) {
+        feature_to_json(feature_counts, radar_labels[i], s->feature_counts[radar_feature_idx[i]]);
+    }
+    json_object_object_add(root, "feature_counts", feature_counts);
 
     rc = json_object_to_file_ext(path, root, JSON_C_TO_STRING_PRETTY);
     if (rc != 0) {

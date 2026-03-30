@@ -111,8 +111,8 @@ void anomaly_event_push(anomaly_event_window *w,
     }
 
     idx = (w->start + w->count) % EVENT_WINDOW_CAP;
-    w->records[idx].ts = ts_sec;
-    w->records[idx].val = val;
+    w->records[idx].event.ts = ts_sec;
+    w->records[idx].event.val = val;
     w->records[idx].classifier = classification;
 
     if (reason) {
@@ -121,6 +121,25 @@ void anomaly_event_push(anomaly_event_window *w,
     } else {
         w->records[idx].reason[0] = '\0';
     }
+
+    w->count++;
+}
+
+void history_score_push(history_score_window *w,
+                        double ts_sec,
+                        float val) {
+    size_t idx;
+
+    if (!w) return;
+
+    if (w->count == EVENT_WINDOW_CAP) {
+        w->start = (w->start + 1) % EVENT_WINDOW_CAP;
+        w->count--;
+    }
+
+    idx = (w->start + w->count) % EVENT_WINDOW_CAP;
+    w->records[idx].ts = ts_sec;
+    w->records[idx].val = val;
 
     w->count++;
 }
