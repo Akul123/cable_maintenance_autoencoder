@@ -12,18 +12,14 @@
     "rx_error_rate",
     "phy_local_rcvr_nok_rate",
     "phy_remote_rcv_nok_rate",
-    "mean_fcs_per_million",
-    "max_fcs_per_million",
     "utilization",
     "flaps_10m",
-    "temp_slope_10m"
+    "temp_delta_10m"
   ],
   "feature_weights": [
     1.5,
     1.5,
     1.0,
-    1.0,
-    1.5,
     1.5,
     1.5,
     1.5,
@@ -33,7 +29,7 @@
     1.5,
     1.5,
     1.0,
-    1.5,
+    1.0,
     1.0
   ],
   "missing_indicator_weight": 0.5,
@@ -50,6 +46,6 @@
   "epochs": 100,
   "early_stop_patience": 20,
   "threshold_quantile": 0.999,
-  "threshold": 0.0344340056180954,
+  "threshold": 0.06907396763563156,
   "export_dir": "output/cable_autoencoder_export"
 }

@@ -6,6 +6,13 @@
 
 #include "../cable_autoencoder_xnnpack.h"
 
+#define ALPHA_FAST  0.05f
+#define ALPHA_SLOW  0.001f
+#define BETA        0.8f
+#define LAMBDA      0.99995f
+#define W1          0.5f    // long term memory
+#define W2          0.2f    // short term memory
+
 typedef struct sample_history_record {
     double ts_sec;
     float mse;
@@ -15,11 +22,11 @@ typedef struct sample_history_record {
 
     float speed_change_count_10m;
     float flaps_10m;
-    float temp_slope_10m;
+    float temp_delta_10m;
 
     float speed_change_count_1h;
     float flaps_1h;
-    float temp_slope_1h;
+    float temp_delta_1h;
 
     top_feature_entry top3[3];
 } sample_history_record;
@@ -31,13 +38,22 @@ typedef struct history_stats {
 } history_stats;
 
 typedef struct stats {
+    bool ewma_initialized;
+    //float current_ewma_error; // exponentially weighted moving average
+    //score_window ewma_records;
+    float ewma_fast;
+    float ewma_slow;
+
+    score_window degradation_score_window;
+    float degradation_score;
+
     uint64_t total_samples;
     uint64_t total_normal_count;
     uint64_t total_suspicious_count;
     uint64_t total_anomalous_count;
     uint64_t total_anomaly_events;
     anomaly_event_window samples;
-    history_score_window history_score;
+    score_window history_score;
     uint64_t feature_counts[NUM_FEATURES];
     float threshold;
     float max_mse_seen;

@@ -28,11 +28,12 @@ class Config:
         "rx_error_rate",
         "phy_local_rcvr_nok_rate",
         "phy_remote_rcv_nok_rate",
-        "mean_fcs_per_million",
-        "max_fcs_per_million",
+        #"mean_fcs_per_million",
+        #"max_fcs_per_million",
         "utilization",
         "flaps_10m",
-        "temp_slope_10m", #if it is not temp from NIC [/sys/class/hwmon/hwmonX/temp1_input] drop this feature
+        #"temp_slope_10m", #if it is not temp from NIC [/sys/class/hwmon/hwmonX/temp1_input] drop this feature
+        "temp_delta_10m"
     )
     # Weighting (aligned with feature_cols order)
     # Example: emphasize error-related features
@@ -40,7 +41,7 @@ class Config:
         1.5, # 2.5,  # frame_err_ppm
         1.5, # 2.0,  # length_err_ppm
         1.0, # 2.0,  # speed_change_count_10m
-        1.0, # 1.5,  # speed_is_downgraded
+        1.5, # 1.5,  # speed_is_downgraded
         1.5, # 3.0,  # rx_err_ppm
         1.5, # 3.0,  # phy_receive_errors_rate
         1.5, # 2.0,  # phy_serdes_ber_errors_rate
@@ -48,11 +49,11 @@ class Config:
         1.5, # 4.0,  # rx_error_rate
         1.5, # 3.0,  # phy_local_rcvr_nok_rate
         1.5, # 3.0,  # phy_remote_rcv_nok_rate
-        1.5, # 4.0,  # mean_fcs_per_million
-        1.5, # 4.0,  # max_fcs_per_million
+        #1.0, # 4.0,  # mean_fcs_per_million
+        #1.5, # 4.0,  # max_fcs_per_million
         1.0, # 1.0,  # utilization
-        1.5, # 3.0,  # flaps_10m
-        1.0,  # 1.0,  # temp_slope_10m
+        1.0, # 3.0,  # flaps_10m
+        1.0, # 1.0,  # temp_slope_10m
     )
     missing_indicator_weight: float = Config.missing_indicator_weight
     add_missing_indicators: bool = Config.add_missing_indicators
@@ -100,8 +101,20 @@ if __name__ == "__main__":
         print(f"Saved model and stats to: {cfg.export_dir}")
         print(f"Threshold: {float(cae.threshold.numpy()):.6f}")
 
-        output = {"threshold": float(cae.threshold.numpy())}
-        with tf.io.gfile.GFile(f"{cfg.export_dir}/models/model_output.json", "w") as f:
+        output = {
+            "model_name": cae.model.name,
+            "model_path": "/etc/cable_autoencoder/cable_autoencoder_quant_fp16.tflite",
+            "vocabs_path": "",
+            "enabled_acceleration": 1,
+            "xnnpack_num_threads": 2,
+            "fallback_num_threads": 2,
+            "threshold": float(cae.threshold.numpy()),
+            "iqr": cae.iqr.numpy().tolist(),
+            "median": cae.median.numpy().tolist(),
+            "eps": float(cae.eps)
+        }
+
+        with tf.io.gfile.GFile(f"{cfg.export_dir}/models/model_config.json", "w") as f:
             json.dump(output, f, indent=2)
     else:
         cae.load()
@@ -109,6 +122,7 @@ if __name__ == "__main__":
         err, is_anom = cae.score_tensor(X)
         print("Errors:", err.numpy().tolist())
         print("Anomalies:", tf.cast(is_anom, tf.int32).numpy().tolist())
+
         for i in range(X.shape[0]):
             out = cae.score_one_with_memory(X[i])
             print(i, out)

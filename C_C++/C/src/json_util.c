@@ -6,9 +6,11 @@
 
 extern const char *states_string[];
 
-const char *radar_labels[] = {
-    "Frame Errors / 1M Packets",
-    "Length Errors / 1M Packets",
+const char *radar_labels[NUM_FEATURES] = {
+    "Rx Frame Errors / 1M Packets",
+    "Rx Length Errors / 1M Packets",
+    "Speed Changes / 10min",
+    "Speed Downgrade",
     "RX Errors",
     "PHY RX Errors",
     "SerDes BER Errors",
@@ -16,7 +18,10 @@ const char *radar_labels[] = {
     "RX Error Rate",
     "Local Receiver NOK",
     "Remote Receiver NOK",
-    "Utilization"
+    //"Avg FCS / 1M",
+    "Utilization",
+    "Link Flaps / 10min",
+    "Temp Trend / 10min"
 };
 
 int classify_anomaly_level(float mse, float threshold) {
@@ -27,6 +32,61 @@ int classify_anomaly_level(float mse, float threshold) {
         return SUSPICIOUS;
     }
     return ANOMALOUS;
+}
+
+// Fast short-term memory:
+// F_t = alpha_f * e_t + (1 - alpha_f) * F_(t-1)
+
+// Slow long-term memory:
+// S_t = alpha_s * e_t + (1 - alpha_s) * S_(t-1)
+
+// Constraint:
+// 0 < alpha_s < alpha_f < 1
+
+// Persistent degradation pressure from slow trend:
+// x_t = max(0, S_t - beta * T)
+
+// Long-term degradation score:
+// D_t = lambda * D_(t-1) + x_t
+
+// where:
+// lambda = 1.0           // no forgetting
+// 0.999 <= lambda < 1.0  // very slow forgetting
+
+// Alternative pressure using fast-above-slow trend:
+// x_t = max(0, F_t - S_t)
+
+// Then:
+// D_t = lambda * D_(t-1) + x_t
+
+// Combined version:
+// F_t = alpha_f * e_t + (1 - alpha_f) * F_(t-1)
+// S_t = alpha_s * e_t + (1 - alpha_s) * S_(t-1)
+// x_t = max(0, S_t - beta * T)
+// y_t = max(0, F_t - S_t)
+// D_t = lambda * D_(t-1) + w1 * x_t + w2 * y_t
+static void update_degradation_metrics(stats *s, float mse, float threshold) {
+    float x_t, y_t;
+
+    if (!s) {
+        return;
+    }
+
+    if (!s->ewma_initialized) {
+        s->ewma_fast = mse;
+        s->ewma_slow = mse;
+        s->degradation_score = 0.0f;
+        s->ewma_initialized = true;
+        return;
+    }
+
+    s->ewma_fast = ALPHA_FAST * mse + (1.0f - ALPHA_FAST) * s->ewma_fast;
+    s->ewma_slow = ALPHA_SLOW * mse + (1.0f - ALPHA_SLOW) * s->ewma_slow;
+
+    x_t = fmaxf(0.0f, s->ewma_slow - BETA * threshold); // long term memory component
+    y_t = fmaxf(0.0f, s->ewma_fast - s->ewma_slow);     // short term memory component
+
+    s->degradation_score = LAMBDA * s->degradation_score + W1 * x_t + W2 * y_t;
 }
 
 void update_stats(stats *s, float mse, int anomaly_level, const char* reason, int max_mse_index, float threshold) {
@@ -70,7 +130,7 @@ void update_stats(stats *s, float mse, int anomaly_level, const char* reason, in
     // float val = sample_term + history_term;
     float val = history_term;
 
-    history_score_push(&s->history_score, timestamp, val);
+    score_push(&s->history_score, timestamp, val);
 
     // in case of anomaly sample increment count
     // for feature with biggest mse
@@ -78,6 +138,10 @@ void update_stats(stats *s, float mse, int anomaly_level, const char* reason, in
         s->feature_counts[max_mse_index]++;
 
     s->last_anomaly_level = anomaly_level;
+
+    // degradations score
+    update_degradation_metrics(s, mse, threshold);
+    score_push(&s->degradation_score_window, timestamp, s->degradation_score);
 }
 
 void history_push_record(history_stats *h, const sample_history_record *rec) {
@@ -150,11 +214,11 @@ void build_sample_history_record(sample_history_record *rec,
 
     rec->speed_change_count_10m = features->speed_change_count_10m;
     rec->flaps_10m = features->flaps_10m;
-    rec->temp_slope_10m = features->temp_slope_10m;
+    rec->temp_delta_10m = features->temp_delta_10m;
 
     rec->speed_change_count_1h = history_metrics->speed_change_count_1h;
     rec->flaps_1h = history_metrics->flaps_1h;
-    rec->temp_slope_1h = history_metrics->temp_slope_1h;
+    rec->temp_delta_1h = history_metrics->temp_delta_1h;
 
     fill_top3_features(rec, feature_errors, feature_names, NUM_FEATURES);
 }
@@ -168,7 +232,7 @@ static void feature_to_json(struct json_object *feature_counts_json, const char 
 
 int save_stats_json(const char *path, const stats *s) {
     struct json_object *root;
-    struct json_object *stats_samples_records, *stats_history_score_records, *feature_counts;
+    struct json_object *stats_samples_records, *stats_history_score_records, *feature_counts, *degradation_score_records;
     int rc;
 
     if (!path || !s) return -1;
@@ -187,24 +251,40 @@ int save_stats_json(const char *path, const stats *s) {
     json_object_object_add(root, "last_mse", json_object_new_double((double)s->last_mse));
     json_object_object_add(root, "last_anomaly_level", json_object_new_string(states_string[s->last_anomaly_level]));
     json_object_object_add(root, "threshold", json_object_new_double((double)s->threshold));
+    json_object_object_add(root, "ewma_initialized", json_object_new_int(s->ewma_initialized));
+    json_object_object_add(root, "degradation_score", json_object_new_double(s->degradation_score));
+    json_object_object_add(root, "ewma_slow", json_object_new_double(s->ewma_slow));
+    json_object_object_add(root, "ewma_fast", json_object_new_double(s->ewma_fast));
+    //json_object_object_add(root, "current_ewma_error", json_object_new_double((double)s->current_ewma_error));
 
     /* samples records */
     stats_samples_records = json_object_new_array();
     for (size_t i = 0; i < s->samples.count; ++i) {
         size_t idx = (s->samples.start + i) % EVENT_WINDOW_CAP;
         struct json_object *item = json_object_new_object();
-        json_object_object_add(item, "ts", json_object_new_double(s->samples.records[idx].event.ts));
-        json_object_object_add(item, "val", json_object_new_double(s->samples.records[idx].event.val));
+        json_object_object_add(item, "ts", json_object_new_double(s->samples.records[idx].record.ts));
+        json_object_object_add(item, "val", json_object_new_double(s->samples.records[idx].record.val));
         json_object_object_add(item, "reason", json_object_new_string(s->samples.records[idx].reason));
         json_object_object_add(item, "classifier", json_object_new_int(s->samples.records[idx].classifier));
         json_object_array_add(stats_samples_records, item);
     }
     json_object_object_add(root, "samples_records", stats_samples_records);
 
+    /* degradation_score_window records */
+    degradation_score_records = json_object_new_array();
+    for (size_t i = 0; i < s->degradation_score_window.count; ++i) {
+        size_t idx = (s->degradation_score_window.start + i) % EVENT_WINDOW_CAP;
+        struct json_object *item = json_object_new_object();
+        json_object_object_add(item, "ts", json_object_new_double(s->degradation_score_window.records[idx].ts));
+        json_object_object_add(item, "val", json_object_new_double(s->degradation_score_window.records[idx].val));
+        json_object_array_add(degradation_score_records, item);
+    }
+    json_object_object_add(root, "degradations_score_records", degradation_score_records);
+
     /* history score records */
     stats_history_score_records = json_object_new_array();
-    for (size_t i = 0; i < s->samples.count; ++i) {
-        size_t idx = (s->samples.start + i) % EVENT_WINDOW_CAP;
+    for (size_t i = 0; i < s->history_score.count; ++i) {
+        size_t idx = (s->history_score.start + i) % EVENT_WINDOW_CAP;
         struct json_object *item = json_object_new_object();
         json_object_object_add(item, "ts", json_object_new_double(s->history_score.records[idx].ts));
         json_object_object_add(item, "val", json_object_new_double(s->history_score.records[idx].val));
@@ -252,9 +332,11 @@ int save_stats_json(const char *path, const stats *s) {
 //     "Utilization"
 // };
     // map between feature_display_names & radar_labels
-    static const int radar_feature_idx[10] = {
+    static const int radar_feature_idx[NUM_FEATURES] = {
         0,   /* Frame Errors */
         1,   /* Length Errors */
+        2,   /* Speed Changes (10m) */
+        3,   /* Speed Downgrade */
         4,   /* RX Errors */
         5,   /* PHY RX Errors */
         6,   /* SerDes BER Errors */
@@ -262,12 +344,16 @@ int save_stats_json(const char *path, const stats *s) {
         8,   /* RX Error Rate */
         9,   /* Local Receiver NOK */
         10,  /* Remote Receiver NOK */
-        13   /* Utilization */
+        //11,  /* mean_fcs_per_million*/
+        11,  /* Utilization */
+        12,  /* flaps_10min */
+        13   /* temp_10min */
     };
 
     feature_counts = json_object_new_array();
-    for (size_t i = 0; i < 10; ++i) {
-        feature_to_json(feature_counts, radar_labels[i], s->feature_counts[radar_feature_idx[i]]);
+    for (size_t i = 0; i < sizeof(s->feature_counts)/sizeof(uint64_t); ++i) {
+        // feature_to_json(feature_counts, radar_labels[i], s->feature_counts[radar_feature_idx[i]]);
+        feature_to_json(feature_counts, radar_labels[i], s->feature_counts[i]);
     }
     json_object_object_add(root, "feature_counts", feature_counts);
 
@@ -279,6 +365,208 @@ int save_stats_json(const char *path, const stats *s) {
 
     json_object_put(root);
     return rc;
+}
+
+static int parse_anomaly_level_string(const char *level) {
+    if (!level) return NORMAL;
+    if (strcmp(level, "normal") == 0) return NORMAL;
+    if (strcmp(level, "suspicious") == 0) return SUSPICIOUS;
+    if (strcmp(level, "anomalous") == 0) return ANOMALOUS;
+    return NORMAL;
+}
+
+int load_stats_json(const char *path, stats *out) {
+    struct json_object *root = NULL;
+    struct json_object *obj = NULL;
+    struct json_object *arr = NULL;
+    size_t i;
+
+    if (!path || !out) {
+        return -1;
+    }
+
+    root = json_object_from_file(path);
+    if (!root) {
+        return -1;
+    }
+
+    if (json_object_object_get_ex(root, "ewma_initialized", &obj)) {
+        out->ewma_initialized = json_object_get_boolean(obj);
+    }
+
+    // if (json_object_object_get_ex(root, "current_ewma_error", &obj)) {
+    //     out->current_ewma_error = (float)json_object_get_double(obj);
+    // }
+
+    if (json_object_object_get_ex(root, "degradation_score", &obj)) {
+        out->degradation_score = (float)json_object_get_double(obj);
+    }
+
+    if (json_object_object_get_ex(root, "ewma_fast", &obj)) {
+        out->ewma_fast = (float)json_object_get_double(obj);
+    }
+
+    if (json_object_object_get_ex(root, "ewma_slow", &obj)) {
+        out->ewma_slow = (float)json_object_get_double(obj);
+    }
+
+    if (json_object_object_get_ex(root, "total_samples", &obj)) {
+        out->total_samples = (uint64_t)json_object_get_int64(obj);
+    }
+
+    if (json_object_object_get_ex(root, "total_normal_count", &obj)) {
+        out->total_normal_count = (uint64_t)json_object_get_int64(obj);
+    }
+
+    if (json_object_object_get_ex(root, "total_suspicious_count", &obj)) {
+        out->total_suspicious_count = (uint64_t)json_object_get_int64(obj);
+    }
+
+    if (json_object_object_get_ex(root, "total_anomalous_count", &obj)) {
+        out->total_anomalous_count = (uint64_t)json_object_get_int64(obj);
+    }
+
+    if (json_object_object_get_ex(root, "total_anomaly_events", &obj)) {
+        out->total_anomaly_events = (uint64_t)json_object_get_int64(obj);
+    }
+
+    if (json_object_object_get_ex(root, "max_mse_seen", &obj)) {
+        out->max_mse_seen = (float)json_object_get_double(obj);
+    }
+
+    if (json_object_object_get_ex(root, "last_mse", &obj)) {
+        out->last_mse = (float)json_object_get_double(obj);
+    }
+
+    if (json_object_object_get_ex(root, "threshold", &obj)) {
+        out->threshold = (float)json_object_get_double(obj);
+    }
+
+    if (json_object_object_get_ex(root, "last_anomaly_level", &obj) &&
+        json_object_is_type(obj, json_type_string)) {
+        out->last_anomaly_level = parse_anomaly_level_string(json_object_get_string(obj));
+    }
+
+    if (json_object_object_get_ex(root, "samples_records", &arr) &&
+        json_object_is_type(arr, json_type_array)) {
+        size_t n = json_object_array_length(arr);
+        out->samples.start = 0;
+        out->samples.count = 0;
+
+        for (i = 0; i < n && i < EVENT_WINDOW_CAP; ++i) {
+            struct json_object *item = json_object_array_get_idx(arr, i);
+            struct json_object *ts = NULL, *val = NULL, *reason = NULL, *classifier = NULL;
+            size_t idx = out->samples.count;
+
+            if (!item) continue;
+
+            json_object_object_get_ex(item, "ts", &ts);
+            json_object_object_get_ex(item, "val", &val);
+            json_object_object_get_ex(item, "reason", &reason);
+            json_object_object_get_ex(item, "classifier", &classifier);
+
+            out->samples.records[idx].record.ts = ts ? json_object_get_double(ts) : 0.0;
+            out->samples.records[idx].record.val = val ? (float)json_object_get_double(val) : 0.0f;
+            out->samples.records[idx].classifier = classifier ? json_object_get_int(classifier) : NORMAL;
+
+            if (reason && json_object_is_type(reason, json_type_string)) {
+                strncpy(out->samples.records[idx].reason,
+                        json_object_get_string(reason),
+                        REASON_LEN - 1);
+                out->samples.records[idx].reason[REASON_LEN - 1] = '\0';
+            } else {
+                out->samples.records[idx].reason[0] = '\0';
+            }
+
+            out->samples.count++;
+        }
+    }
+
+    if (json_object_object_get_ex(root, "history_score", &arr) &&
+        json_object_is_type(arr, json_type_array)) {
+        size_t n = json_object_array_length(arr);
+        out->history_score.start = 0;
+        out->history_score.count = 0;
+
+        for (i = 0; i < n && i < EVENT_WINDOW_CAP; ++i) {
+            struct json_object *item = json_object_array_get_idx(arr, i);
+            struct json_object *ts = NULL, *val = NULL;
+            size_t idx = out->history_score.count;
+
+            if (!item) continue;
+
+            json_object_object_get_ex(item, "ts", &ts);
+            json_object_object_get_ex(item, "val", &val);
+
+            out->history_score.records[idx].ts = ts ? json_object_get_double(ts) : 0.0;
+            out->history_score.records[idx].val = val ? (float)json_object_get_double(val) : 0.0f;
+            out->history_score.count++;
+        }
+    }
+
+    if (json_object_object_get_ex(root, "feature_counts", &arr) &&
+        json_object_is_type(arr, json_type_array)) {
+        size_t n = json_object_array_length(arr);
+
+        for (i = 0; i < n && i < NUM_FEATURES; ++i) {
+            struct json_object *item = json_object_array_get_idx(arr, i);
+            struct json_object *val = NULL;
+
+            if (!item) continue;
+            if (json_object_object_get_ex(item, "val", &val)) {
+                out->feature_counts[i] = (uint64_t)json_object_get_int64(val);
+            }
+        }
+    }
+
+    // if (json_object_object_get_ex(root, "ewma_error_records", &arr) &&
+    //     json_object_is_type(arr, json_type_array)) {
+    //     size_t n = json_object_array_length(arr);
+
+    //     for (i = 0; i < n; ++i) {
+    //         struct json_object *item = json_object_array_get_idx(arr, i);
+    //         struct json_object *val = NULL, *ts = NULL;
+    //         size_t idx = out->ewma_records.count;
+
+    //         if (!item) continue;
+
+    //         json_object_object_get_ex(item, "ts", &ts);
+    //         json_object_object_get_ex(item, "val", &val);
+
+    //         if (json_object_object_get_ex(item, "val", &val)) {
+    //             out->ewma_records.records[i].val = (double)json_object_get_double(val);
+    //             out->ewma_records.records[i].ts = ts ? json_object_get_double(ts) : 0.0;
+    //         }
+    //     }
+    // }
+
+    if (json_object_object_get_ex(root, "degradations_score_records", &arr) &&
+        json_object_is_type(arr, json_type_array)) {
+        size_t n = json_object_array_length(arr);
+        out->degradation_score_window.start = 0;
+        out->degradation_score_window.count = 0;
+
+        for (i = 0; i < n && i < EVENT_WINDOW_CAP; ++i) {
+            struct json_object *item = json_object_array_get_idx(arr, i);
+            struct json_object *val = NULL, *ts = NULL;
+            size_t idx = out->degradation_score_window.count;
+
+            if (!item) continue;
+
+            json_object_object_get_ex(item, "ts", &ts);
+            json_object_object_get_ex(item, "val", &val);
+
+            if (json_object_object_get_ex(item, "val", &val)) {
+                out->degradation_score_window.records[idx].val = (double)json_object_get_double(val);
+                out->degradation_score_window.records[idx].ts = ts ? json_object_get_double(ts) : 0.0;
+            }
+            out->degradation_score_window.count++;
+        }
+    }
+
+    json_object_put(root);
+
+    return 0;
 }
 
 int save_history_json(const char *path, const history_stats *h) {
@@ -317,10 +605,10 @@ int save_history_json(const char *path, const history_stats *h) {
         json_object_object_add(item, "anomaly_level", json_object_new_string(states_string[rec->anomaly_level]));
         json_object_object_add(item, "speed_change_count_10m", json_object_new_double(rec->speed_change_count_10m));
         json_object_object_add(item, "flaps_10m", json_object_new_double(rec->flaps_10m));
-        json_object_object_add(item, "temp_slope_10m", json_object_new_double(rec->temp_slope_10m));
+        json_object_object_add(item, "temp_delta_10m", json_object_new_double(rec->temp_delta_10m));
         json_object_object_add(item, "speed_change_count_1h", json_object_new_double(rec->speed_change_count_1h));
         json_object_object_add(item, "flaps_1h", json_object_new_double(rec->flaps_1h));
-        json_object_object_add(item, "temp_slope_1h", json_object_new_double(rec->temp_slope_1h));
+        json_object_object_add(item, "temp_delta_1h", json_object_new_double(rec->temp_delta_1h));
         json_object_object_add(item, "anomalous_count_1h", json_object_new_double(rec->anomalous_count_1h));
         json_object_object_add(item, "suspicious_count_1h", json_object_new_double(rec->suspicious_count_1h));
 

@@ -111,8 +111,8 @@ void anomaly_event_push(anomaly_event_window *w,
     }
 
     idx = (w->start + w->count) % EVENT_WINDOW_CAP;
-    w->records[idx].event.ts = ts_sec;
-    w->records[idx].event.val = val;
+    w->records[idx].record.ts = ts_sec;
+    w->records[idx].record.val = val;
     w->records[idx].classifier = classification;
 
     if (reason) {
@@ -125,9 +125,9 @@ void anomaly_event_push(anomaly_event_window *w,
     w->count++;
 }
 
-void history_score_push(history_score_window *w,
-                        double ts_sec,
-                        float val) {
+void score_push(score_window *w,
+                double ts_sec,
+                float val) {
     size_t idx;
 
     if (!w) return;

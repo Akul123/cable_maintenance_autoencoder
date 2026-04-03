@@ -10,9 +10,10 @@
 
 #define NUM_INPUTS      1
 #define NUM_OUTPUTS     1
-#define NUM_FEATURES    16
+#define NUM_FEATURES    14
 #define INTERVAL        60
 #define BITS_PER_BYTE   8.0f
+#define ALPHA           0.05f // EWMA smoothing factor, smaller for longer timeperiods
 
 #define SPAN_10MIN      600.0f  // 10 min in seconds
 #define SPAN_1H         3600.0f // 1 hour in seconds
@@ -29,7 +30,7 @@
 #endif
 
 #define CONFIG_PATH     "./config.json"
-#define CONFIG_PATH_ETC "/etc/cable_autoencoder/config.json"
+#define CONFIG_PATH_ETC "/etc/cable_autoencoder/model_config.json"
 #define INTERFACE       "eth0"
 
 #define NORMAL      0
@@ -87,18 +88,19 @@ typedef struct cable_features {
     // float tx_dropped_rate;           // host TX dropped delta / sec
     // float bad_octets_rate;           // bad_octets delta / sec
     float phy_local_rcvr_nok_rate;      // phy_local_rcvr_nok delta / sec
-    float phy_remote_rcv_nok_rate;     // phy_remote_rcv_nok delt / sec
-    float mean_fcs_per_million;         // fcs errors per million packets
-    float max_fcs_per_million;          // max fcs errors per million packets
+    float phy_remote_rcv_nok_rate;      // phy_remote_rcv_nok delt / sec
+    //float mean_fcs_per_million;       // fcs errors per million packets
+    //float max_fcs_per_million;        // max fcs errors per million packets
     float utilization;                  // (rx_bps + tx_bps) / link_bps
     float flaps_10m;                    // carrier transition count in last 10 min
-    float temp_slope_10m;               // (temp_now - temp_10m_ago) / 600
+    // float temp_slope_10m;            // (temp_now - temp_10m_ago) / 600
+    float temp_delta_10m;               // (temp_now - temp_10m_ago)
 } cable_features;
 
 typedef struct cable_history_metrics {
     float speed_change_count_1h;
     float flaps_1h;
-    float temp_slope_1h;
+    float temp_delta_1h;
 } cable_history_metrics;
 
 typedef struct cable_anomaly_history_metrics {

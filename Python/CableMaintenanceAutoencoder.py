@@ -23,9 +23,10 @@ def loss_plot(history, output_dir):
     plt.savefig(f"{output_dir}/images/loss_curve.png", dpi=150)
     plt.close()
 
-def score_distribution_plot(model, X_val, threshold, output_dir):
-    xhat_val = model(X_val, training=False)
-    val_err = CableAutoencoder.reconstruction_error(X_val, xhat_val).numpy()
+def score_distribution_plot(cable_autoencoder, X_val, threshold, output_dir):
+    xhat_val = cable_autoencoder.model(X_val, training=False)
+    #val_err = CableAutoencoder.reconstruction_error(X_val, xhat_val).numpy()
+    val_err = cable_autoencoder.reconstruction_error_normalized(X_val, xhat_val).numpy()
     th = float(threshold.numpy())
 
     plt.figure(figsize=(7,4))
@@ -41,9 +42,10 @@ def score_distribution_plot(model, X_val, threshold, output_dir):
     plt.savefig(f"{output_dir}/images/score_distribution.png", dpi=150)
     plt.close()
 
-def score_timeline_plot(model, X_val, threshold, output_dir):
-    xhat_val = model(X_val, training=False)
-    val_err = CableAutoencoder.reconstruction_error(X_val, xhat_val).numpy()
+def score_timeline_plot(cable_autoencoder, X_val, threshold, output_dir):
+    xhat_val = cable_autoencoder.model(X_val, training=False)
+    #val_err = CableAutoencoder.reconstruction_error(X_val, xhat_val).numpy()
+    val_err = cable_autoencoder.reconstruction_error_normalized(X_val, xhat_val).numpy()
     th = float(threshold.numpy())
 
     plt.figure(figsize=(9,4))
@@ -118,7 +120,7 @@ class CableAutoencoder:
         q1 = self._quantile_axis0(X_num, 0.25)
         q3 = self._quantile_axis0(X_num, 0.75)
         iqr = q3 - q1
-        self.iqr = tf.where(iqr < 1e-3, tf.ones_like(iqr), iqr)  # avoid blowups
+        self.iqr = tf.where(iqr < self.eps, tf.ones_like(iqr), iqr)  # avoid blowups
 
     def transform(self, X: tf.Tensor) -> tf.Tensor:
         return (X - self.median) / (self.iqr + self.eps)
@@ -153,7 +155,7 @@ class CableAutoencoder:
         median_c = tf.constant(self.median, dtype=tf.float32)  # shape [n_num]
         iqr_c = tf.constant(self.iqr, dtype=tf.float32)        # shape [n_num]
 
-        x_num = (x_num - median_c) / iqr_c
+        x_num = (x_num - median_c) / (self.iqr + self.eps)
         x_num = tf.keras.ops.clip(x_num, -10.0, 10.0)
 
         x = tf.keras.ops.concatenate([x_num, x_miss], axis=1) if has_missing_ind else x_num
@@ -180,9 +182,16 @@ class CableAutoencoder:
     def reconstruction_error(x, xhat):
         return tf.reduce_mean(tf.square(x - xhat), axis=1)
 
+    def reconstruction_error_normalized(self, x, xhat):
+        # clip values from -10 to 10
+        x_norm = tf.clip_by_value(self.transform(x), -10.0, 10.0)
+        xhat_norm = tf.clip_by_value(self.transform(xhat), -10.0, 10.0)
+        return tf.reduce_mean(tf.square(x_norm - xhat_norm), axis=1)
+
     def calibrate_threshold(self, X_val_raw: tf.Tensor):
         xhat = self.model(X_val_raw, training=False)
-        err = self.reconstruction_error(X_val_raw, xhat)
+        #err = self.reconstruction_error(X_val_raw, xhat)
+        err = self.reconstruction_error_normalized(X_val_raw, xhat)
         th = self._quantile_axis0(tf.expand_dims(err, 1), self.cfg.threshold_quantile)[0]
         self.cfg.threshold = float(th.numpy())
         self.threshold.assign(th)
@@ -209,13 +218,14 @@ class CableAutoencoder:
         history = self.model.fit(train_ds, validation_data=val_ds, epochs=self.cfg.epochs, callbacks=callbacks, verbose=1)
         loss_plot(history, self.cfg.export_dir)
         self.calibrate_threshold(X_val)  # raw
-        score_distribution_plot(self.model, X_val, self.threshold, self.cfg.export_dir)
-        score_timeline_plot(self.model, X_val, self.threshold, self.cfg.export_dir)
+        score_distribution_plot(self, X_val, self.threshold, self.cfg.export_dir)
+        score_timeline_plot(self, X_val, self.threshold, self.cfg.export_dir)
 
     def score_tensor(self, X: tf.Tensor):
         # raw input; model handles normalization
         xhat = self.model(X, training=False)
-        err = self.reconstruction_error(X, xhat)
+        #err = self.reconstruction_error(X, xhat)
+        err = self.reconstruction_error_normalized(X, xhat)
         is_anom = err > self.threshold
         return err, is_anom
 
@@ -372,16 +382,21 @@ class CableAutoencoder:
             print("INT8 export skipped (no representative_data provided)")
 
     def load(self):
-        self.model = tf.keras.models.load_model(f"{self.cfg.export_dir}/model.keras", compile=False)
+        self.model = tf.keras.models.load_model(f"{self.cfg.export_dir}/models/cable_autoencoder.keras", compile=False)
         self.input_dim = self.model.input_shape[-1]
 
         n_num = len(self.cfg.feature_cols)
-        self.median = tf.Variable(tf.zeros([n_num], dtype=tf.float32), trainable=False)
-        self.iqr = tf.Variable(tf.ones([n_num], dtype=tf.float32), trainable=False)
-        self.threshold = tf.Variable(0.0, dtype=tf.float32, trainable=False)
+
+        # load config
+        with tf.io.gfile.GFile(f"{Config.OUTPUT_JSON}", "r") as f:
+            data = json.load(f)
+
+        self.threshold = tf.Variable(data["threshold"], dtype=tf.float32, trainable=False)
+        self.iqr = tf.Variable(np.array(data["iqr"], dtype=np.float32), trainable=False)
+        self.median = tf.Variable(np.array(data["median"], dtype=np.float32), trainable=False)
 
         ckpt = tf.train.Checkpoint(median=self.median, iqr=self.iqr, threshold=self.threshold)
-        ckpt.restore(f"{self.cfg.export_dir}/stats.ckpt").expect_partial()
+        ckpt.restore(f"{self.cfg.export_dir}/models/stats.ckpt").expect_partial()
 
     def _build_loss_weights(self) -> tf.Tensor:
         w_num = tf.constant(self.cfg.feature_weights, dtype=tf.float32)
@@ -404,7 +419,8 @@ class CableAutoencoder:
         # x_row shape: [features]
         x = tf.expand_dims(x_row, axis=0)
         xhat = self.model(x, training=False)
-        err = float(self.reconstruction_error(x, xhat)[0].numpy())
+        # err = float(self.reconstruction_error(x, xhat)[0].numpy())
+        err = float(self.reconstruction_error_normalized(x, xhat)[0].numpy())
         is_anom = err > float(self.threshold.numpy())
         mem = self.mem.update(err, is_anom, ts=ts)
         return {"error": err, "is_anomaly": is_anom, **mem}

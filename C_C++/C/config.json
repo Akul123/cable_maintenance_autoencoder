@@ -5,5 +5,5 @@
     "enabled_acceleration": true,
     "xnnpack_num_threads": 2,
     "fallback_num_threads": 2,
-    "threshold": 0.0344340056180954 //copied from training Python/output/cable_autoencoder_export/models/config.json
+    "threshold": 2.923031806945801 //copied from training Python/output/cable_autoencoder_export/models/config.json
 }

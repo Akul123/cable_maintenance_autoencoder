@@ -1,3 +1,5 @@
+#include "../cable_autoencoder_xnnpack.h"
+
 #define RECORD_ID_1024 1024
 #define RECORD_ID_1025 1025
 #define RECORD_ID_2048 2048
@@ -107,6 +109,9 @@ struct model_config {
     char vocab_path[256];
     char model_name[64];
     float threshold;
+    float iqr[NUM_FEATURES];
+    float median[NUM_FEATURES];
+    float eps;
     bool enabled_acceleration;
     int xnnpack_num_threads;
     int fallback_num_threads;

@@ -9,7 +9,7 @@ import psutil
 import json
 import tensorflow as tf
 
-DEBUG = 1
+DEBUG = 0
 WARMUP_RUNS = 100
 BENCHMARK_RUNS = 18000
 
@@ -33,7 +33,7 @@ feature_cols: tuple = (
     "phy_local_rcvr_nok_rate",
     "phy_remote_rcv_nok_rate",
     "mean_fcs_per_million",
-    "max_fcs_per_million",
+    #"max_fcs_per_million",
     "utilization",
     "flaps_10m",
     "temp_slope_10m", #if it is not temp from NIC [/sys/class/hwmon/hwmonX/temp1_input] drop this feature
@@ -159,7 +159,6 @@ for i in range(n_eval_warmup):
 
 i=0
 # BENCHMARK
-  # avoid wrap mismatch for scoring
 for i in range(n_eval_benchmark):
     idx = i % n_eval_benchmark  # sequential wrap-around
 
@@ -200,9 +199,14 @@ print(f"\t CPU system: {cpu_after.system - cpu_before.system} s")
 n_eval = min(BENCHMARK_RUNS, n_samples)  # avoid wrap mismatch for scoring
 sample_outputs = outputs[:n_eval]        # each entry: list of 10 tensors, each (1, d)
 
-#Load threshold
+#Load config
 with tf.io.gfile.GFile(f"{Config.OUTPUT_JSON}", "r") as f:
-    threshold = float(json.load(f)["threshold"])
+    data = json.load(f)
+
+threshold = float(data["threshold"])
+iqr = np.array(data["iqr"], dtype=np.float32)
+median = np.array(data["median"], dtype=np.float32)
+eps = float(data["eps"])
 
 # x shape: (1, n_features), y shape: (1, n_features)
 # y = interpreter.get_tensor(output_details["index"])
@@ -212,10 +216,12 @@ x_true = X_val[:n_eval].numpy().astype(np.float32)            # (n_eval, n_featu
 y_pred = np.concatenate(outputs[:n_eval], axis=0).astype(np.float32)  # (n_eval, n_features)
 
 # all inputs vs matching outputs (row-wise)
-err = np.mean((x_true - y_pred) ** 2, axis=1)                 # (n_eval,)
+err = np.mean(((x_true - y_pred) / (iqr + eps)) ** 2, axis=1)
+#err = np.mean((x_true - y_pred) ** 2, axis=1)                 # (n_eval,)
 anomalies = err > threshold
 
-count = np.sum(anomalies > threshold)
+# count = np.sum(anomalies > threshold)
+count = np.count_nonzero(anomalies)
 print(f"Anomalies: {count}/{anomalies.size}")
 
 # -----------------------------

@@ -2,9 +2,12 @@ from dataclasses import dataclass
 from collections import deque
 import time
 
+SECONDS_IN_10MIN = 600.0
+SECONDS_IN_1H    = 3600.0
+
 @dataclass
 class MemoryConfig:
-    ewma_alpha: float = 0.05
+    ewma_alpha: float = 0.05 # exponentially weighted moving average
     warn_rate_1h: float = 0.05
     crit_rate_1h: float = 0.15
     warn_streak: int = 3
@@ -45,8 +48,8 @@ class LongTermMemory:
         if is_anom:
             self.last_anom_ts = ts
 
-        self._push(self.win_10m, ts, is_anom_i, 600.0)
-        self._push(self.win_1h, ts, is_anom_i, 3600.0)
+        self._push(self.win_10m, ts, is_anom_i, SECONDS_IN_10MIN)
+        self._push(self.win_1h, ts, is_anom_i, SECONDS_IN_1H)
 
         rate_10m = self._rate(self.win_10m)
         rate_1h = self._rate(self.win_1h)

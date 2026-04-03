@@ -17,15 +17,15 @@ typedef struct rolling_window {
     size_t count;
 } rolling_window;
 
-typedef struct history_event {
+typedef struct history_record {
     double ts;
     float val;
-} history_event;
+} history_record;
 
 typedef struct anomaly_event_record {
-    //double ts;
-    //float val;      // MSE value
-    history_event event;
+    // double ts;
+    // float val;      // MSE value
+    history_record record;
     int classifier; // NORMAL || SUSPICIOUS || ANOMALOUS
     char reason[REASON_LEN];
 } anomaly_event_record;
@@ -36,11 +36,23 @@ typedef struct anomaly_event_window {
     size_t count;
 } anomaly_event_window;
 
-typedef struct history_score_window {
-    history_event records[EVENT_WINDOW_CAP];
+// typedef struct ewma_error_window {
+//     history_record records[EVENT_WINDOW_CAP];
+//     size_t start;
+//     size_t count;
+// } ewma_error_window;
+
+// typedef struct history_score_window {
+//     history_record records[EVENT_WINDOW_CAP];
+//     size_t start;
+//     size_t count;
+// } history_score_window;
+
+typedef struct score_window {
+    history_record records[EVENT_WINDOW_CAP];
     size_t start;
     size_t count;
-} history_score_window;
+} score_window;
 
 typedef struct top_feature_entry {
     char name[64];
@@ -50,8 +62,8 @@ typedef struct top_feature_entry {
 // anomaly window
 void anomaly_event_push(anomaly_event_window *w, double ts_sec, float val, const int classification, const char *reason);
 
-// history score window
-void history_score_push(history_score_window *w, double ts_sec, float val);
+// score window
+void score_push(score_window *w, double ts_sec, float val);
 
 // rolling window
 void rolling_push(rolling_window *w, double ts, float value, double span_sec);

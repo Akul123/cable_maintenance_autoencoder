@@ -403,17 +403,17 @@ static bool load_vocab_group(struct json_object *root,
 
 static bool load_float_array(struct json_object *root, const char *key, float *out, int n) {
     struct json_object *arr = NULL;
-    if (!json_object_object_get_ex(root, key, &arr)) 
+    if (!json_object_object_get_ex(root, key, &arr))
         return false;
-    if (!json_object_is_type(arr, json_type_array)) 
+    if (!json_object_is_type(arr, json_type_array))
         return false;
-    if (json_object_array_length(arr) != (size_t)n) 
+    if (json_object_array_length(arr) != (size_t)n)
         return false;
 
     for (int i = 0; i < n; ++i) {
         struct json_object *item = json_object_array_get_idx(arr, i);
         if (!json_object_is_type(item, json_type_double) &&
-            !json_object_is_type(item, json_type_int)) 
+            !json_object_is_type(item, json_type_int))
             return false;
 
         out[i] = (float)json_object_get_double(item);
@@ -513,7 +513,8 @@ float sparse_cross_entropy(const float *prob, int idx, int n) {
 int read_config(const char* cfg_path, struct model_config *value)
 {
     struct json_object *model_obj, *vocabs_obj, *model_name, *xnnpack_num_threads,
-                       *fallback_num_threads, *enabled_acceleration, *threshold;
+                       *fallback_num_threads, *enabled_acceleration, *threshold,
+                       *iqr, *median, *eps;
 
     struct json_object* root = json_object_from_file(cfg_path);
     if (!root) {
@@ -556,6 +557,21 @@ int read_config(const char* cfg_path, struct model_config *value)
         json_object_put(root);
         return 1;
     }
+    if (!json_object_object_get_ex(root, "iqr", &iqr)) {
+        fprintf(stderr, "Missing key: iqr\n");
+        json_object_put(root);
+        return 1;
+    }
+    if (!json_object_object_get_ex(root, "median", &median)) {
+        fprintf(stderr, "Missing key: median\n");
+        json_object_put(root);
+        return 1;
+    }
+    if (!json_object_object_get_ex(root, "eps", &eps)) {
+        fprintf(stderr, "Missing key: eps\n");
+        json_object_put(root);
+        return 1;
+    }
 
     strncpy(value->model_path, json_object_get_string(model_obj), sizeof(value->model_path)-1);
     strncpy(value->vocab_path, json_object_get_string(vocabs_obj), sizeof(value->vocab_path)-1);
@@ -564,6 +580,10 @@ int read_config(const char* cfg_path, struct model_config *value)
     value->xnnpack_num_threads = json_object_get_int(xnnpack_num_threads);
     value->fallback_num_threads = json_object_get_int(fallback_num_threads);
     value->threshold = (float)json_object_get_double(threshold);
+    value->eps = (float)json_object_get_double(eps);
+
+    load_float_array(root, "iqr", value->iqr, NUM_FEATURES);
+    load_float_array(root, "median", value->median, NUM_FEATURES);
 
     json_object_put(root); // free JSON
 

@@ -30,8 +30,8 @@ const char *const feature_names[NUM_FEATURES] = {
     //"tx_dropped_rate",
     "phy_local_rcvr_nok_rate",
     "phy_remote_rcv_nok_rate",
-    "mean_fcs_per_million",
-    "max_fcs_per_million",
+    //"mean_fcs_per_million",
+    //"max_fcs_per_million",
     "utilization",
     "flaps_10m",
     "temp_slope_10m"
@@ -40,7 +40,7 @@ const char *const feature_names[NUM_FEATURES] = {
 const char *const feature_display_names[NUM_FEATURES] = {
     "Frame Errors",
     "Length Errors",
-    "Speed Changes (10m)",
+    "Speed Changes / 10min",
     "Speed Downgrade",
     "RX Errors",
     "PHY RX Errors",
@@ -49,14 +49,14 @@ const char *const feature_display_names[NUM_FEATURES] = {
     "RX Error Rate",
     "Local Receiver NOK",
     "Remote Receiver NOK",
-    "Avg FCS / 1M",
-    "Max FCS / 1M",
+    //"Avg FCS / 1M",
+    //"Max FCS / 1M",
     "Utilization",
-    "Link Flaps (10m)",
-    "Temp Trend (10m)"
+    "Link Flaps / 10min",
+    "Temp Trend / 10min"
 };
 
-const char *const reasons[16] = {
+const char *const reasons[NUM_FEATURES] = {
     "Elevated frame errors indicate damaged frames or link-quality problems",
     "Elevated length errors indicate malformed or truncated Ethernet frames",
     "Frequent speed changes in the last 10 minutes indicate unstable link negotiation",
@@ -68,13 +68,12 @@ const char *const reasons[16] = {
     "Rising RX error rate indicates worsening receive-path reliability",
     "Rising PHY local receiver NOK rate indicates local receiver-side faults",
     "Rising PHY remote receiver NOK rate indicates remote receiver-side faults",
-    "High mean FCS error level indicates sustained frame corruption over time",
-    "High peak FCS error level indicates severe short-term frame corruption spikes",
+    //"High mean FCS error level indicates sustained frame corruption over time",
+    //"High peak FCS error level indicates severe short-term frame corruption spikes",
     "Abnormal link utilization indicates unusual traffic load or congestion",
     "Frequent link flaps in the last 10 minutes indicate unstable cable or port state",
-    "Rapid temperature slope in the last 10 minutes indicates thermal instability"
+    "Rapid temperature delta in the last 10 minutes indicates thermal instability"
 };
-
 
 /* GLOBALS */
 struct model_config config;
@@ -188,25 +187,25 @@ static int compute_cable_features( cable_feature_state *state,
     rx_err_delta = nonneg_delta_u64(curr->rx_errors, state->prev.rx_errors);
     fcs_delta = nonneg_delta_u64(curr->rx_crc_errors, state->prev.rx_crc_errors);
 
-    out->frame_err_ppm = (!isnan(frame_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * frame_delta / fmaxf(rx_pkts_delta, 1.0f))
+    out->frame_err_ppm = (!isnan(frame_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * frame_delta / fmaxf(rx_pkts_delta, 100.0f))
                                                                         : NAN;
 
-    out->length_err_ppm = (!isnan(len_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * len_delta / fmaxf(rx_pkts_delta, 1.0f))
+    out->length_err_ppm = (!isnan(len_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * len_delta / fmaxf(rx_pkts_delta, 100.0f))
                                                                        : NAN;
 
     out->speed_change_count_10m = rolling_sum(&state->speed_change_10m);
     out->speed_is_downgraded = speed_downgraded;
 
-    out->rx_err_ppm = (!isnan(rx_err_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * rx_err_delta / fmaxf(rx_pkts_delta, 1.0f))
+    out->rx_err_ppm = (!isnan(rx_err_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * rx_err_delta / fmaxf(rx_pkts_delta, 100.0f))
                                                                       : NAN;
 
     out->phy_receive_errors_rate = safe_rate_u64(curr->phy_receive_errors, state->prev.phy_receive_errors, dt_sec);
     out->phy_serdes_ber_errors_rate = safe_rate_u64(curr->phy_serdes_ber_errors, state->prev.phy_serdes_ber_errors, dt_sec);
-    out->fcs_per_million_pkts = (!isnan(fcs_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * fcs_delta / fmaxf(rx_pkts_delta, 1.0f))
+    out->fcs_per_million_pkts = (!isnan(fcs_delta) && !isnan(rx_pkts_delta)) ? (1000000.0f * fcs_delta / fmaxf(rx_pkts_delta, 100.0f))
                                                                              : NAN;
     rolling_push(&state->fcs_ppm_10m, curr->ts_sec, out->fcs_per_million_pkts, SPAN_10MIN);
-    out->mean_fcs_per_million = rolling_avg(&state->fcs_ppm_10m);
-    out->max_fcs_per_million = rolling_max(&state->fcs_ppm_10m);
+    //out->mean_fcs_per_million = rolling_avg(&state->fcs_ppm_10m);
+    //out->max_fcs_per_million = rolling_max(&state->fcs_ppm_10m);
 
     out->rx_error_rate = safe_rate_u64(curr->rx_errors, state->prev.rx_errors, dt_sec);
 
@@ -222,21 +221,25 @@ static int compute_cable_features( cable_feature_state *state,
     out->flaps_10m = rolling_sum(&state->link_flap_10m);
 
     temp_first = rolling_first(&state->temp_10m);
-    out->temp_slope_10m = (!isnan(temp_first) && !isnan(curr->temp_c)) ? ((curr->temp_c - temp_first) / 600.0f)
+    // out->temp_slope_10m = (!isnan(temp_first) && !isnan(curr->temp_c)) ? ((curr->temp_c - temp_first) / SPAN_10MIN)
+    //                                                                    : NAN;
+    out->temp_delta_10m = (!isnan(temp_first) && !isnan(curr->temp_c)) ? ((curr->temp_c - temp_first))
                                                                        : NAN;
-
     /* cable history metrics */
     out_history_metrics->speed_change_count_1h = rolling_sum(&state->speed_change_1h);
     out_history_metrics->flaps_1h = rolling_sum(&state->link_flap_1h);
     float first_temp_1h = rolling_first(&state->temp_1h);
-    out_history_metrics->temp_slope_1h = (!isnan(curr->temp_c) && !isnan(first_temp_1h)) ? (curr->temp_c - first_temp_1h) / 3600.0f
+    // out_history_metrics->temp_slope_1h = (!isnan(curr->temp_c) && !isnan(first_temp_1h)) ? (curr->temp_c - first_temp_1h) / SPAN_1H
+    //                                                                                      : NAN;
+
+    out_history_metrics->temp_delta_1h = (!isnan(curr->temp_c) && !isnan(first_temp_1h)) ? (curr->temp_c - first_temp_1h)
                                                                                          : NAN;
 
     state->prev = *curr;
     return 0;
 }
 
-static void pack_model_input(const cable_features *f, float input[16]) {
+static void pack_model_input(const cable_features *f, float input[NUM_FEATURES]) {
     input[0]  = f->frame_err_ppm;
     input[1]  = f->length_err_ppm;
     input[2]  = f->speed_change_count_10m;
@@ -248,11 +251,12 @@ static void pack_model_input(const cable_features *f, float input[16]) {
     input[8]  = f->rx_error_rate;
     input[9]  = f->phy_local_rcvr_nok_rate;
     input[10] = f->phy_remote_rcv_nok_rate;
-    input[11] = f->mean_fcs_per_million;
-    input[12] = f->max_fcs_per_million;
-    input[13] = f->utilization;
-    input[14] = f->flaps_10m;
-    input[15] = f->temp_slope_10m;
+    //input[11] = f->mean_fcs_per_million;
+    //input[12] = f->max_fcs_per_million;
+    input[11] = f->utilization;
+    input[12] = f->flaps_10m;
+    //input[15] = f->temp_slope_10m;
+    input[13] = f->temp_delta_10m;
 }
 
 void model_inputs_outputs(TfLiteInterpreter* interpreter)
@@ -337,13 +341,31 @@ static int invoke_model( TfLiteInterpreter *interpreter,
         return -1;
     }
 
-    for (i = 0; i < NUM_FEATURES; ++i) {
-        float d = model_input[i] - model_output[i];
-        reconstruction_error_per_feature[i] = fabsf(d);
-        mse += d * d;
-    }
-    mse /= (float)NUM_FEATURES;
+    float mse_feat[NUM_FEATURES];
+    memset(mse_feat, 0, NUM_FEATURES*sizeof(float));
 
+    for (i = 0; i < NUM_FEATURES; ++i) {
+        // float denom = config.iqr[i] + config.eps;
+        // float d_norm = (model_input[i] - model_output[i]) / denom;
+        float x_norm = (model_input[i] - config.median[i]) / (config.iqr[i] + config.eps);
+        float y_norm = (model_output[i] - config.median[i]) / (config.iqr[i] + config.eps);
+
+        // clip same as in python
+        if (x_norm > 10.0f) x_norm = 10.0f;
+        if (x_norm < -10.0f) x_norm = -10.0f;
+        if (y_norm > 10.0f) y_norm = 10.0f;
+        if (y_norm < -10.0f) y_norm = -10.0f;
+
+        float d_norm = x_norm - y_norm;
+        reconstruction_error_per_feature[i] = fabsf(d_norm);
+        mse += d_norm * d_norm;
+        mse_feat[i] = d_norm * d_norm;
+    }
+    // for(i=0; i < NUM_FEATURES; ++i) {
+    //     printf("mse_feat[%d]=%f\n", i, mse_feat[i]);
+    // }
+
+    mse /= (float)NUM_FEATURES;
     if (reconstruction_error) {
         *reconstruction_error = mse;
     }
@@ -632,14 +654,23 @@ static void update_anomaly_metrics(float mse, float threshold, double timestamp,
  * something similar to argmax in python,
  * get index of member with highest value
  */
-static int get_argmax(float *array, size_t size) {
-    int max_idx = 0;
-    float max_val = array[0];
 
-    for (size_t i = 1; i < size; ++i) {
-        if (array[i] > max_val) {
+static int get_argmax(const float *array, size_t size) {
+    size_t i;
+    int max_idx = -1;
+    float max_val = -INFINITY;
+
+    if (!array || size == 0) {
+        return -1;
+    }
+
+    for (i = 0; i < size; ++i) {
+        if (isnan(array[i])) {
+            continue;
+        }
+        if (max_idx < 0 || array[i] > max_val) {
             max_val = array[i];
-            max_idx = i;
+            max_idx = (int)i;
         }
     }
 
@@ -697,6 +728,11 @@ int main() {
     printf("-xnpack number of threads: %d\n", config.xnnpack_num_threads);
     printf("-fallback number of threads: %d\n", config.fallback_num_threads);
     printf("-threshold: %f\n", config.threshold);
+    for(size_t i = 0; i < NUM_FEATURES; ++i)
+        printf("-iqr[%ld]: %f\n", i, config.iqr[i]);
+    for(size_t i = 0; i < NUM_FEATURES; ++i)
+        printf("-median[%ld]: %f\n", i, config.median[i]);
+    printf("-epsilon: %f\n", config.eps);
     printf("==================================================================\n");
 
     model = TfLiteModelCreateFromFile(config.model_path);
@@ -856,7 +892,11 @@ int main() {
         update_anomaly_metrics(mse, config.threshold, sample.ts_sec, &feature_state, &anomaly_metrics);
         anomaly_level = classify_anomaly_level(mse, config.threshold);
 
-        max_mse_index = get_argmax(mse_per_feature, sizeof(mse_per_feature));
+        for(size_t i = 0; i < NUM_FEATURES; ++i) {
+            printf("%s:%d mse_per_feature[%ld] = %f \n", __FUNCTION__, __LINE__, i, mse_per_feature[i]);
+        }
+        max_mse_index = get_argmax(mse_per_feature, NUM_FEATURES);
+        printf("%s:%d max_mse_index = %d \n", __FUNCTION__, __LINE__, max_mse_index);
         update_stats(&stats_obj, mse, anomaly_level, reasons[max_mse_index], max_mse_index, config.threshold);
         build_sample_history_record(&rec,
                                     sample.ts_sec,
