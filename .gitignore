@@ -1,3 +1,5 @@
 Python/__pycache__/*
+Python/configs/__pycache__/*
+Python/output/*
 
 C_C++/C/cable_autoencoder_xnnpack/*

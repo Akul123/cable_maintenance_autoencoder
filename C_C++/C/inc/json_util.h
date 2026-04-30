@@ -6,17 +6,19 @@
 
 #include "../cable_autoencoder_xnnpack.h"
 
-#define ALPHA_FAST  0.05f
-#define ALPHA_SLOW  0.001f
-#define BETA        0.8f
-#define LAMBDA      0.99995f
-#define W1          0.5f    // long term memory
-#define W2          0.2f    // short term memory
+#define DEG_ALPHA_FAST  0.20f
+#define DEG_ALPHA_SLOW  0.03f
+#define DEG_MEMORY      0.995f
+#define DEG_W_LONG      0.70f
+#define DEG_W_SHORT     0.50f
+#define DEG_GAIN        0.12f
+#define DEG_BETA        0.80f
 
 typedef struct sample_history_record {
     double ts_sec;
     float mse;
     int anomaly_level;
+    char reason[REASON_LEN];
     int anomalous_count_1h;
     int suspicious_count_1h;
 
@@ -82,6 +84,7 @@ void build_sample_history_record(sample_history_record *rec,
                                  double ts_sec,
                                  float mse,
                                  int anomaly_level,
+                                 const char *reason,
                                  const cable_features *features,
                                  const cable_history_metrics *history_metrics,
                                  const cable_anomaly_history_metrics *anomaly_metrics,

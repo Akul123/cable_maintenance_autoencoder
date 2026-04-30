@@ -14,7 +14,7 @@ const char *radar_labels[NUM_FEATURES] = {
     "RX Errors",
     "PHY RX Errors",
     "SerDes BER Errors",
-    "FCS / 1M Packets",
+    "Rx CRC Errors / 1M Packets",
     "RX Error Rate",
     "Local Receiver NOK",
     "Remote Receiver NOK",
@@ -34,59 +34,118 @@ int classify_anomaly_level(float mse, float threshold) {
     return ANOMALOUS;
 }
 
-// Fast short-term memory:
-// F_t = alpha_f * e_t + (1 - alpha_f) * F_(t-1)
+// // Fast short-term memory:
+// // F_t = alpha_f * e_t + (1 - alpha_f) * F_(t-1)
 
-// Slow long-term memory:
-// S_t = alpha_s * e_t + (1 - alpha_s) * S_(t-1)
+// // Slow long-term memory:
+// // S_t = alpha_s * e_t + (1 - alpha_s) * S_(t-1)
 
-// Constraint:
-// 0 < alpha_s < alpha_f < 1
+// // Constraint:
+// // 0 < alpha_s < alpha_f < 1
 
-// Persistent degradation pressure from slow trend:
-// x_t = max(0, S_t - beta * T)
+// // Persistent degradation pressure from slow trend:
+// // x_t = max(0, S_t - beta * T)
 
-// Long-term degradation score:
-// D_t = lambda * D_(t-1) + x_t
+// // Long-term degradation score:
+// // D_t = lambda * D_(t-1) + x_t
 
-// where:
-// lambda = 1.0           // no forgetting
-// 0.999 <= lambda < 1.0  // very slow forgetting
+// // where:
+// // lambda = 1.0           // no forgetting
+// // 0.999 <= lambda < 1.0  // very slow forgetting
 
-// Alternative pressure using fast-above-slow trend:
-// x_t = max(0, F_t - S_t)
+// // Alternative pressure using fast-above-slow trend:
+// // x_t = max(0, F_t - S_t)
 
-// Then:
-// D_t = lambda * D_(t-1) + x_t
+// // Then:
+// // D_t = lambda * D_(t-1) + x_t
 
-// Combined version:
-// F_t = alpha_f * e_t + (1 - alpha_f) * F_(t-1)
-// S_t = alpha_s * e_t + (1 - alpha_s) * S_(t-1)
-// x_t = max(0, S_t - beta * T)
-// y_t = max(0, F_t - S_t)
-// D_t = lambda * D_(t-1) + w1 * x_t + w2 * y_t
+// // Combined version:
+// // F_t = alpha_f * e_t + (1 - alpha_f) * F_(t-1)
+// // S_t = alpha_s * e_t + (1 - alpha_s) * S_(t-1)
+// // x_t = max(0, S_t - beta * T)
+// // y_t = max(0, F_t - S_t)
+// // D_t = lambda * D_(t-1) + w1 * x_t + w2 * y_t
+// static void update_degradation_metrics(stats *s, float mse, float threshold) {
+//     float x_t, y_t;
+
+//     if (!s) {
+//         return;
+//     }
+
+//     if (!s->ewma_initialized) {
+//         s->ewma_fast = mse;
+//         s->ewma_slow = mse;
+//         s->degradation_score = 0.0f;
+//         s->ewma_initialized = true;
+//         return;
+//     }
+
+//     s->ewma_fast = ALPHA_FAST * mse + (1.0f - ALPHA_FAST) * s->ewma_fast;
+//     s->ewma_slow = ALPHA_SLOW * mse + (1.0f - ALPHA_SLOW) * s->ewma_slow;
+
+//     x_t = fmaxf(0.0f, s->ewma_slow - BETA * threshold); // long term memory component
+//     y_t = fmaxf(0.0f, s->ewma_fast - s->ewma_slow);     // short term memory component
+
+//     s->degradation_score = LAMBDA * s->degradation_score + W1 * x_t + W2 * y_t;
+// }
+
+// Degradation score with fast reaction and long memory.
+//
+// We first compress mse with log1p() so rare extreme spikes do not dominate
+// the score. Then we track two EWMA signals:
+//
+// F_t: fast EWMA, reacts within minutes to fresh anomalies
+// S_t: slow EWMA, represents longer-term degradation trend
+//
+// From those we derive two non-negative pressures:
+//
+// slow_pressure = max(0, S_t - beta * T)
+//   Measures sustained degradation above the threshold baseline.
+//
+// fast_pressure = max(0, F_t - S_t)
+//   Measures new short-term worsening relative to the long-term trend.
+//
+// The total pressure is a weighted blend of long-term and short-term effects:
+//
+// instant_pressure = w_long * slow_pressure + w_short * fast_pressure
+//
+// Finally, degradation_score is updated as a leaky accumulator:
+//
+// D_t = memory * D_(t-1) + gain * instant_pressure
+//
+// This makes the score rise quickly when cable quality worsens, remember
+// degradation for hours after the event, and decay gradually once pressure
+// disappears instead of staying elevated forever.
 static void update_degradation_metrics(stats *s, float mse, float threshold) {
-    float x_t, y_t;
+    float mse_log;
+    float threshold_log;
+    float slow_pressure;
+    float fast_pressure;
+    float instant_pressure;
 
     if (!s) {
         return;
     }
 
+    mse_log = log1pf(fmaxf(0.0f, mse));
+    threshold_log = log1pf(fmaxf(0.0f, threshold));
+
     if (!s->ewma_initialized) {
-        s->ewma_fast = mse;
-        s->ewma_slow = mse;
+        s->ewma_fast = mse_log;
+        s->ewma_slow = mse_log;
         s->degradation_score = 0.0f;
-        s->ewma_initialized = true;
+        s->ewma_initialized = 1;
         return;
     }
 
-    s->ewma_fast = ALPHA_FAST * mse + (1.0f - ALPHA_FAST) * s->ewma_fast;
-    s->ewma_slow = ALPHA_SLOW * mse + (1.0f - ALPHA_SLOW) * s->ewma_slow;
+    s->ewma_fast = DEG_ALPHA_FAST * mse_log + (1.0f - DEG_ALPHA_FAST) * s->ewma_fast;
+    s->ewma_slow = DEG_ALPHA_SLOW * mse_log + (1.0f - DEG_ALPHA_SLOW) * s->ewma_slow;
 
-    x_t = fmaxf(0.0f, s->ewma_slow - BETA * threshold); // long term memory component
-    y_t = fmaxf(0.0f, s->ewma_fast - s->ewma_slow);     // short term memory component
+    slow_pressure = fmaxf(0.0f, s->ewma_slow - DEG_BETA * threshold_log);
+    fast_pressure = fmaxf(0.0f, s->ewma_fast - s->ewma_slow);
+    instant_pressure = DEG_W_LONG * slow_pressure + DEG_W_SHORT * fast_pressure;
 
-    s->degradation_score = LAMBDA * s->degradation_score + W1 * x_t + W2 * y_t;
+    s->degradation_score = DEG_MEMORY * s->degradation_score + DEG_GAIN * instant_pressure;
 }
 
 void update_stats(stats *s, float mse, int anomaly_level, const char* reason, int max_mse_index, float threshold) {
@@ -105,7 +164,7 @@ void update_stats(stats *s, float mse, int anomaly_level, const char* reason, in
         s->max_mse_seen = mse;
     }
 
-    /* anomaly_event records*/
+    /* anomaly_event records */
     if (anomaly_level == NORMAL) {
         s->total_normal_count++;
         anomaly_event_push(&s->samples, timestamp, mse, NORMAL, "normal sample");
@@ -196,6 +255,7 @@ void build_sample_history_record(sample_history_record *rec,
                                  double ts_sec,
                                  float mse,
                                  int anomaly_level,
+                                 const char *reason,
                                  const cable_features *features,
                                  const cable_history_metrics *history_metrics,
                                  const cable_anomaly_history_metrics *anomaly_metrics,
@@ -209,6 +269,12 @@ void build_sample_history_record(sample_history_record *rec,
     rec->ts_sec = ts_sec;
     rec->mse = mse;
     rec->anomaly_level = anomaly_level;
+    /* reason */
+    if (rec->anomaly_level == NORMAL)
+        strcpy(rec->reason, "normal");
+    else
+        strcpy(rec->reason, reason);
+
     rec->anomalous_count_1h = anomaly_metrics->anomalous_count_1h;
     rec->suspicious_count_1h = anomaly_metrics->suspicious_count_1h;
 
@@ -611,6 +677,7 @@ int save_history_json(const char *path, const history_stats *h) {
         json_object_object_add(item, "temp_delta_1h", json_object_new_double(rec->temp_delta_1h));
         json_object_object_add(item, "anomalous_count_1h", json_object_new_double(rec->anomalous_count_1h));
         json_object_object_add(item, "suspicious_count_1h", json_object_new_double(rec->suspicious_count_1h));
+        json_object_object_add(item, "reason", json_object_new_string(rec->reason));
 
         for (j = 0; j < 3; ++j) {
             struct json_object *top = json_object_new_object();

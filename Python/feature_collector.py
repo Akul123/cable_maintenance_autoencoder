@@ -134,6 +134,13 @@ def read_sys(iface, name, default=""):
     except Exception:
         return default
 
+def read_sys_statistics(iface, name, default=""):
+    p = Path(f"/sys/class/net/{iface}/statistics/{name}")
+    try:
+        return p.read_text().strip()
+    except Exception:
+        return default
+
 def read_first_float(path):
     try:
         return float(Path(path).read_text().strip())
@@ -317,6 +324,7 @@ class CableFeatureState:
         self.prev_port = {}
         self.prev_host = {}
         self.prev_carrier = None
+        self.prev_link_flaps = None
         self.last_link_down_ts = None
         self.prev_speed_mbps = None
 
@@ -332,13 +340,18 @@ class CableFeatureState:
         # 1h window
         self.w_link_flap_1h = Rolling(3600)
 
+def print_dict(d):
+    for k in sorted(d):
+        print(f"{k}={d[k]!r}", flush=True)
+
 def compute_cable_features(
     state: CableFeatureState,
     ts: float,
+    interface: str,
     phy_stats: dict,
     port_stats: dict,
     host_stats: dict,
-    carrier: int,
+    carrier_changes: int,
     speed_mbps: int,
     temp_c: float | None
 ):
@@ -368,22 +381,22 @@ def compute_cable_features(
     feats["phy_remote_rcv_nok_rate"] = safe_rate(phy_remote_rcv_nok, prev_phy_remote_rcv_nok, dt_sec)
 
     # ---------- Link stability ----------
-    link_flap = 0
-    if state.prev_carrier is not None and carrier != state.prev_carrier:
-        link_flap = 1
+    link_flap = carrier_changes
     feats["link_flap"] = link_flap
-
-    if carrier == 0:
-        state.last_link_down_ts = ts
-
-    feats["time_since_last_link_down"] = (
-        0.0 if state.last_link_down_ts is None else (ts - state.last_link_down_ts)
-    )
+    new_link_flaps = link_flap - state.prev_link_flaps if (link_flap is not None and state.prev_link_flaps is not None) else None
+    state.prev_link_flaps = link_flap
 
     # ---------- Port MAC integrity ----------
-    in_fcs = pick(port_stats, "in_fcs_error", "rx_crc_errors", "rx_frame_check_sequence_errors")
-    in_rx_err = get_rx_errors(port_stats)
-    out_tx_err = get_tx_errors(port_stats)
+    # in_fcs = pick(port_stats, "in_fcs_error", "rx_crc_errors", "rx_frame_check_sequence_errors")
+    in_fcs = to_int(read_sys_statistics(interface, "rx_crc_errors"))
+    port_stats["rx_crc_errors"] = in_fcs
+    #in_rx_err = get_rx_errors(port_stats)
+    in_rx_err = to_int(read_sys_statistics(interface, "rx_errors"))
+    port_stats["rx_errors"] = in_rx_err
+    #out_tx_err = get_tx_errors(port_stats)
+    out_tx_err = to_int(read_sys_statistics(interface, "tx_errors"))
+    port_stats["tx_errors"] = out_tx_err
+
     in_bad_octets = pick(port_stats, "in_bad_octets")
     in_frag = pick(port_stats, "in_fragments")
     in_jabber = pick(port_stats, "in_jabber")
@@ -392,8 +405,9 @@ def compute_cable_features(
     in_discards = pick(port_stats, "in_discards")
     rx_packets = pick(port_stats, "rx_packets")
 
-    p_in_fcs = pick(state.prev_port, "in_fcs_error", "rx_crc_errors", "rx_frame_check_sequence_errors")
-    p_in_rx_err = get_rx_errors(state.prev_port)
+    p_in_fcs = pick(state.prev_port, "rx_crc_errors")
+    # p_in_rx_err = get_rx_errors(state.prev_port)
+    p_in_rx_err = pick(state.prev_port, "rx_errors")
     p_out_tx_err = get_tx_errors(state.prev_port)
     p_in_bad_octets = pick(state.prev_port, "in_bad_octets")
     p_in_frag = pick(state.prev_port, "in_fragments")
@@ -404,10 +418,14 @@ def compute_cable_features(
     p_rx_packets = pick(state.prev_port, "rx_packets")
 
     # frame/length/rx ppm (per million RX packets)
-    in_frame_err = pick(port_stats, "rx_frame_errors", "rx_alignment_errors")
-    in_len_err = pick(port_stats, "rx_length_errors", "rx_length_field_frame_errors")
-    p_in_frame_err = pick(state.prev_port, "rx_frame_errors", "rx_alignment_errors")
-    p_in_len_err = pick(state.prev_port, "rx_length_errors", "rx_length_field_frame_errors")
+    # in_frame_err = pick(port_stats, "rx_frame_errors", "rx_alignment_errors")
+    in_frame_err = to_int(read_sys_statistics(interface, "rx_frame_errors"))
+    port_stats["rx_frame_errors"] = in_frame_err
+    #in_len_err = pick(port_stats, "rx_length_errors", "rx_length_field_frame_errors")
+    in_len_err = to_int(read_sys_statistics(interface, "rx_length_errors"))
+    port_stats["rx_length_errors"] = in_len_err
+    p_in_frame_err = pick(state.prev_port, "rx_frame_errors")
+    p_in_len_err = pick(state.prev_port, "rx_length_errors")
 
     frame_delta = nonneg_delta(in_frame_err, p_in_frame_err)
     len_delta = nonneg_delta(in_len_err, p_in_len_err)
@@ -441,7 +459,6 @@ def compute_cable_features(
 
     else:
         feats["fcs_per_million_pkts"] = None
-
 
     feats["rx_error_rate"] = safe_rate(in_rx_err, p_in_rx_err, dt_sec)
     feats["tx_error_rate"] = safe_rate(out_tx_err, p_out_tx_err, dt_sec)
@@ -499,8 +516,8 @@ def compute_cable_features(
     state.w_discards_10m.push(ts, feats["port_discards_rate"])
     state.w_util_10m.push(ts, feats["utilization"])
     state.w_temp_10m.push(ts, temp_c)
-    state.w_link_flap_10m.push(ts, link_flap)
-    state.w_link_flap_1h.push(ts, link_flap)
+    state.w_link_flap_10m.push(ts, new_link_flaps) #link_flap)
+    state.w_link_flap_1h.push(ts, new_link_flaps)  #link_flap)
 
     feats["mean_fcs_per_million"] = state.w_fcs_ppm_10m.avg()
     feats["max_fcs_per_million"] = state.w_fcs_ppm_10m.max()
@@ -518,11 +535,15 @@ def compute_cable_features(
     feats["temp_slope_10m"] = None if feats["temp_delta_10m"] is None else feats["temp_delta_10m"] / 600.0
 
     # ---------- advance state ----------
+    # print(f"port_stats\n")
+    # print_dict(port_stats)
+    # print(f"prev_port_stats\n")
+    # print_dict(state.prev_port)
     state.prev_ts = ts
     state.prev_phy = dict(phy_stats)
     state.prev_port = dict(port_stats)
     state.prev_host = dict(host_stats)
-    state.prev_carrier = carrier
+    state.prev_carrier = carrier_changes
     state.prev_speed_mbps = speed_mbps
 
     return feats
@@ -555,16 +576,16 @@ def main():
             port = ethtool_stats(args.iface)         # same port
             host = ethtool_stats(args.iface)         # masterif in DSA
             speed_mbps = ethtool_speed_mbps(args.iface)
-            carrier = to_int(read_sys(args.iface, "carrier", "0"), 0)  # replace with /sys/class/net/<iface>/carrier
+            carrier_changes = to_int(read_sys(args.iface, "carrier_changes", "0"), 0)  # replace with /sys/class/net/<iface>/carrier
             temp_c = read_host_temp_c()
 
             features = compute_cable_features(
-                state, ts, phy, port, host, carrier, speed_mbps, temp_c
+                state, ts, args.iface, phy, port, host, carrier_changes, speed_mbps, temp_c
             )
             row = {
                 "timestamp": ts,
                 "iface": args.iface,
-                "carrier": carrier,
+                "carrier": carrier_changes,
                 "speed_mbps": speed_mbps,
                 "temp_c": temp_c,
                 **features,
@@ -573,6 +594,7 @@ def main():
             f.flush()   # force write to disk each iteration
 
             samples += 1
+            print(f"Writing sample nr {samples}")
             if args.count > 0 and samples >= args.count:
                 break
             time.sleep(args.interval)

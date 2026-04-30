@@ -70,7 +70,7 @@ class CableAutoencoder:
         # scaler tensors
         self.median = None
         self.iqr = None
-        self.eps = tf.constant(1e-6, dtype=tf.float32)
+        self.eps = tf.constant(1e-6, dtype=tf.float32) #constant to avoid division with 0
 
         # anomaly threshold tensor
         self.threshold = tf.Variable(0.0, dtype=tf.float32, trainable=False)
@@ -120,7 +120,8 @@ class CableAutoencoder:
         q1 = self._quantile_axis0(X_num, 0.25)
         q3 = self._quantile_axis0(X_num, 0.75)
         iqr = q3 - q1
-        self.iqr = tf.where(iqr < self.eps, tf.ones_like(iqr), iqr)  # avoid blowups
+        #self.iqr = tf.where(iqr < self.eps, tf.ones_like(iqr), iqr)  # avoid blowups
+        self.iqr = tf.where(iqr < 1e-3, tf.ones_like(iqr), iqr)  # avoid blowups
 
     def transform(self, X: tf.Tensor) -> tf.Tensor:
         return (X - self.median) / (self.iqr + self.eps)
@@ -156,7 +157,7 @@ class CableAutoencoder:
         iqr_c = tf.constant(self.iqr, dtype=tf.float32)        # shape [n_num]
 
         x_num = (x_num - median_c) / (self.iqr + self.eps)
-        x_num = tf.keras.ops.clip(x_num, -10.0, 10.0)
+        x_num = tf.keras.ops.clip(x_num, -100.0, 100.0)
 
         x = tf.keras.ops.concatenate([x_num, x_miss], axis=1) if has_missing_ind else x_num
 
@@ -184,8 +185,8 @@ class CableAutoencoder:
 
     def reconstruction_error_normalized(self, x, xhat):
         # clip values from -10 to 10
-        x_norm = tf.clip_by_value(self.transform(x), -10.0, 10.0)
-        xhat_norm = tf.clip_by_value(self.transform(xhat), -10.0, 10.0)
+        x_norm = tf.clip_by_value(self.transform(x), -100.0, 100.0)
+        xhat_norm = tf.clip_by_value(self.transform(xhat), -100.0, 100.0)
         return tf.reduce_mean(tf.square(x_norm - xhat_norm), axis=1)
 
     def calibrate_threshold(self, X_val_raw: tf.Tensor):
@@ -412,7 +413,10 @@ class CableAutoencoder:
 
     def weighted_mse(self, y_true, y_pred):
         # shape: [batch, features]
-        sq = tf.square(y_true - y_pred)
+        y_true_norm = tf.clip_by_value(self.transform(y_true), -100.0, 100.0)
+        y_pred_norm = tf.clip_by_value(self.transform(y_pred), -100.0, 100.0)
+
+        sq = tf.square(y_true_norm - y_pred_norm)
         return tf.reduce_mean(sq * self.loss_weights, axis=1)
 
     def score_one_with_memory(self, x_row: tf.Tensor, ts: float | None = None):

@@ -34,7 +34,7 @@ const char *const feature_names[NUM_FEATURES] = {
     //"max_fcs_per_million",
     "utilization",
     "flaps_10m",
-    "temp_slope_10m"
+    "temp_delta_10m"
 };
 
 const char *const feature_display_names[NUM_FEATURES] = {
@@ -52,7 +52,7 @@ const char *const feature_display_names[NUM_FEATURES] = {
     //"Avg FCS / 1M",
     //"Max FCS / 1M",
     "Utilization",
-    "Link Flaps / 10min",
+    "Link Flaps avg / 10min",
     "Temp Trend / 10min"
 };
 
@@ -170,7 +170,7 @@ static int compute_cable_features( cable_feature_state *state,
         }
     }
 
-    if (curr->carrier != state->prev.carrier) {
+    if (curr->carrier_change != state->prev.carrier_change) {
         link_flap = 1.0f;
     }
 
@@ -351,10 +351,10 @@ static int invoke_model( TfLiteInterpreter *interpreter,
         float y_norm = (model_output[i] - config.median[i]) / (config.iqr[i] + config.eps);
 
         // clip same as in python
-        if (x_norm > 10.0f) x_norm = 10.0f;
-        if (x_norm < -10.0f) x_norm = -10.0f;
-        if (y_norm > 10.0f) y_norm = 10.0f;
-        if (y_norm < -10.0f) y_norm = -10.0f;
+        if (x_norm > 100.0f) x_norm = 100.0f;
+        if (x_norm < -100.0f) x_norm = -100.0f;
+        if (y_norm > 100.0f) y_norm = 100.0f;
+        if (y_norm < -100.0f) y_norm = -100.0f;
 
         float d_norm = x_norm - y_norm;
         reconstruction_error_per_feature[i] = fabsf(d_norm);
@@ -365,6 +365,7 @@ static int invoke_model( TfLiteInterpreter *interpreter,
     //     printf("mse_feat[%d]=%f\n", i, mse_feat[i]);
     // }
 
+    printf("model_input[13] = %f, model_output[13] = %f\n", model_input[13], model_output[13]);
     mse /= (float)NUM_FEATURES;
     if (reconstruction_error) {
         *reconstruction_error = mse;
@@ -625,7 +626,7 @@ static void update_anomaly_metrics(float mse, float threshold, double timestamp,
     if (mse <= 0.9 * threshold) {
         anomaly_level = NORMAL;
     } else if(mse > 0.9 * threshold &&
-              mse <= threshold) {
+              mse <= 1.2 * threshold) {
         anomaly_level = SUSPICIOUS;
     } else {
         anomaly_level = ANOMALOUS;
@@ -829,7 +830,7 @@ int main() {
         memset(&mse_per_feature, 0, sizeof(mse_per_feature));
 
         sample.ts_sec = (double)time(NULL);
-        sample.carrier = read_int_sys(INTERFACE, "carrier");
+        sample.carrier_change = read_int_sys(INTERFACE, "carrier_change");
         sample.speed_mbps = get_speed_mbps(INTERFACE);
         sample.temp_c = (float)read_host_temp();
 
@@ -902,6 +903,7 @@ int main() {
                                     sample.ts_sec,
                                     mse,
                                     anomaly_level,
+                                    reasons[max_mse_index],
                                     &features,
                                     &history_metrics,
                                     &anomaly_metrics,

@@ -95,7 +95,7 @@ if __name__ == "__main__":
         cae.train()
         cae.save()
 
-        X = cae.load_csv_features(Config.train_csv)
+        X = cae.load_csv_features(args.csv)
         X_train, _ = cae.split_train_val(X)
         cae.convert2tflite_quant(X_train)
         print(f"Saved model and stats to: {cfg.export_dir}")

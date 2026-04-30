@@ -111,7 +111,7 @@ typedef struct cable_anomaly_history_metrics {
 typedef struct raw_sample {
     double ts_sec;  // timestamp
 
-    int carrier;
+    int carrier_change;
     int speed_mbps;
     float temp_c;
 

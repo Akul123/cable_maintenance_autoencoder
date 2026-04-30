@@ -9,7 +9,7 @@
   <script src="./chart.umd.js"></script>
   <script src="./hammer.min.js"></script>
   <script src="./chartjs-plugin-zoom.min.js"></script>
-  <script src="./chartjs-plugin-datalabels.min.js"></script>
+  <!-- <script src="./chartjs-plugin-datalabels.min.js"></script> -->
   <style>
     :root {
       --bg: #ffffff;
@@ -164,7 +164,7 @@
     //Chart.register(ChartDataLabels);
 
     const histChartCtx = document.getElementById("historyChart");
-    const histScoreChartCtx = document.getElementById("historyScoreChart");
+    // const histScoreChartCtx = document.getElementById("historyScoreChart");
     const statsChartCtx = document.getElementById("statsChart");
     const pieStatsChartCtx = document.getElementById("pieStatsChart");
     const degradationScoreLineChartCtx = document.getElementById("degradationScoreLineChart");
@@ -178,7 +178,7 @@
     let histData = null;
     let statsData = null;
     let histChart = null;
-    let histScoreChart = null;
+    // let histScoreChart = null;
     let pieStatsChart = null;
     let degradationScoreLineChart = null;
     let statsChart = null;
@@ -305,8 +305,8 @@
       const featureCountsVals = featureCounts.map(f => f.val ?? null);
       const featureCountsLabels = featureCounts.map(f => f.name ?? null);
 
-      console.log("featureCountsLabels ", featureCountsLabels)
-      console.log("featureCountsVals ", featureCountsVals)
+      // console.log("featureCountsLabels ", featureCountsLabels)
+      // console.log("featureCountsVals ", featureCountsVals)
 
       if (statsChart)
         statsChart.destroy();
@@ -367,22 +367,16 @@
 
       const historyRecords = Array.isArray(hist.records) ? hist.records : [];
       const histLabels = historyRecords.map(r => new Date((r.ts_sec || 0) * 1000).toLocaleString());
-      const mseData = historyRecords.map(r => r.mse ?? null);
       const pointColors = historyRecords.map(r => levelToColor(r.anomaly_level));
-      const barData = historyRecords.map(r => {
-        if (r.anomaly_level === "anomalous") return [0, 5];
-        if (r.anomaly_level === "suspicious") return [0, 2];
-        return [0, 1];
-      });
-
-      const barColors = historyRecords.map(r => {
-        if (r.anomaly_level === "anomalous") return "#F44336";
-        if (r.anomaly_level === "suspicious") return "#FFC107";
-        return "#4CAF50";
-      });
 
       if (histChart)
         histChart.destroy();
+
+      const stateData = historyRecords.map(r => {
+        if (r.anomaly_level === "anomalous") return 3;
+        if (r.anomaly_level === "suspicious") return 2;
+        return 1;
+      });
 
       histChart = new Chart(histChartCtx, {
         type: "line",
@@ -390,13 +384,15 @@
           labels: histLabels,
           datasets: [
             {
-              label: "anomaly score",
-              data: mseData,
-              borderColor: pointColors,//"#c2410c",
+              label: "anomaly level",
+              data: stateData,
+              stepped:true,
+              borderColor: "#334155",
               backgroundColor: "rgba(194, 65, 12, 0.15)",
-              tension: 0.25,
+              pointBackgroundColor: pointColors,
+              pointBorderColor: pointColors,
+              //tension: 0.25,
               yAxisID: "y",
-              pointBackgroundColor: pointColors,//"#c2410c",
               pointRadius: 2,
               pointHoverRadius: 5
             }
@@ -409,7 +405,7 @@
             legend: { position: "top" },
             title: {
               display: true,
-              text: 'Anomaly score on eth0 interface in last ~5 days'
+              text: 'State of eth0 interface in last ~4 hours'
             },
             zoom: {
               pan: {
@@ -437,7 +433,8 @@
                   const i = items[0].dataIndex;
                   const rec = historyRecords[i];
                   return [
-                    `timestamp: ${new Date((rec.ts || 0) * 1000).toLocaleString() ?? "n/a"}`
+                    `reason: ${rec.reason ?? "n/a"}`,
+                    `timestamp: ${new Date((rec.ts_sec || 0) * 1000).toLocaleString() ?? "n/a"}`
                   ];
                 }
               }
@@ -456,7 +453,18 @@
             y: {
               type: "linear",
               position: "left",
-              title: { display: true, text: "anomaly score" },
+              min: 0.5,
+              max: 3.5,
+              ticks: {
+                stepSize: 1,
+                callback(value) {
+                  if (value === 1) return "Normal";
+                  if (value === 2) return "Suspicious";
+                  if (value === 3) return "Anomalous";
+                  return "";
+                }
+              },
+              title: { display: true, text: "State" },
               grid: { color: "rgba(31, 41, 55, 0.12)" }
             }
           }
@@ -500,7 +508,7 @@
             legend: { position: "top" },
             title: {
               display: true,
-              text: 'Anomaly score on eth0 interface in last ~5 days'
+              text: 'Anomaly score on eth0 interface in last ~4 hours'
             },
             zoom: {
               pan: {
@@ -647,6 +655,169 @@
       });
     }
 
+async function loadDegradationChartFromStatsTest() {
+  try {
+    const resp = await fetch("./stats_test.json");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const stats = await resp.json();
+
+    const records = Array.isArray(stats.samples_records) ? stats.samples_records : [];
+    if (!records.length) return;
+
+    const rawThreshold = Number(stats.threshold ?? 0);
+
+    const labels = records.map(r =>
+      new Date((r.ts || 0) * 1000).toLocaleString()
+    );
+
+    // Compress huge spikes so a single outlier does not dominate the whole chart.
+    const mseValues = records.map(r => Math.log1p(Number(r.val ?? 0)));
+    const threshold = Math.log1p(rawThreshold);
+
+    const ALPHA_FAST = 0.20;
+    const ALPHA_SLOW = 0.03;
+    const MEMORY = 0.995;
+    const W_LONG = 0.7;
+    const W_SHORT = 0.5;
+    const GAIN = 0.12;
+    const BETA = 0.80;
+
+    let fast = mseValues[0];
+    let slow = mseValues[0];
+    let score = 0;
+
+    const fastSeries = [];
+    const slowSeries = [];
+    const scoreSeries = [];
+
+    for (const mse of mseValues) {
+      fast = ALPHA_FAST * mse + (1 - ALPHA_FAST) * fast;
+      slow = ALPHA_SLOW * mse + (1 - ALPHA_SLOW) * slow;
+
+      const slowPressure = Math.max(0, slow - BETA * threshold);
+      const fastPressure = Math.max(0, fast - slow);
+      const instantPressure = W_LONG * slowPressure + W_SHORT * fastPressure;
+
+      score = MEMORY * score + GAIN * instantPressure;
+
+      fastSeries.push(fast);
+      slowSeries.push(slow);
+      scoreSeries.push(score);
+    }
+
+    if (degradationScoreLineChart)
+      degradationScoreLineChart.destroy();
+
+    degradationScoreLineChart = new Chart(degradationScoreLineChartCtx, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: "Degradation score",
+            data: scoreSeries,
+            borderColor: "#c2410c",
+            backgroundColor: "rgba(194, 65, 12, 0.15)",
+            pointRadius: 2,
+            pointHoverRadius: 5,
+            yAxisID: "y"
+          },
+          {
+            label: "Fast EWMA",
+            data: fastSeries,
+            borderColor: "#ef4444",
+            pointRadius: 0,
+            borderWidth: 1.5,
+            yAxisID: "y1"
+          },
+          {
+            label: "Slow EWMA",
+            data: slowSeries,
+            borderColor: "#f59e0b",
+            pointRadius: 0,
+            borderWidth: 1.5,
+            yAxisID: "y1"
+          },
+          {
+            label: "Threshold",
+            data: labels.map(() => threshold),
+            borderColor: "#64748b",
+            borderDash: [6, 6],
+            pointRadius: 0,
+            borderWidth: 1,
+            yAxisID: "y1"
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "top" },
+          title: {
+            display: true,
+            text: "Cable degradation score from stats_test.json"
+          },
+          zoom: {
+            pan: {
+              enabled: true,
+              mode: "x",
+              modifierKey: "shift"
+            },
+            zoom: {
+              drag: { enabled: true },
+              wheel: {
+                enabled: true,
+                modifierKey: "ctrl"
+              },
+              pinch: { enabled: true },
+              mode: "x"
+            }
+          },
+          tooltip: {
+            callbacks: {
+              afterBody(items) {
+                const i = items[0].dataIndex;
+                const rec = records[i];
+                return [
+                  `raw mse: ${Number(rec.val ?? 0).toFixed(6)}`,
+                  `reason: ${rec.reason ?? "n/a"}`,
+                  `timestamp: ${new Date((rec.ts || 0) * 1000).toLocaleString()}`
+                ];
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: {
+              autoSkip: true,
+              maxTicksLimit: 20,
+              maxRotation: 45,
+              minRotation: 45
+            },
+            grid: { color: "rgba(31, 41, 55, 0.08)" }
+          },
+          y: {
+            type: "linear",
+            position: "left",
+            title: { display: true, text: "Degradation score" },
+            grid: { color: "rgba(31, 41, 55, 0.12)" }
+          },
+          y1: {
+            type: "linear",
+            position: "right",
+            title: { display: true, text: "log(MSE) / EWMA" },
+            grid: { drawOnChartArea: false }
+          }
+        }
+      }
+    });
+  } catch (err) {
+    console.error(`Failed to load stats_test.json: ${err.message}`);
+  }
+}
+
     function buildChart(hist, stats) {
 
       if (!hist || !stats)
@@ -671,7 +842,8 @@
       buildStatsChart(statsData);
       buildHistoryChart(hist);
       buildDegradationScoreLineChart(stats)
-      buildHistoryScoreChart(stats);
+      // loadDegradationChartFromStatsTest()
+      // buildHistoryScoreChart(stats);
     }
 
     async function loadHistoryFromServer() {
